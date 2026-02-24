@@ -5,26 +5,25 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
 
 /**
- * Minimal Think MCP Server with Persistent Sessions
+ * Session Think MCP Server
  * 
- * Implements a pure thinking workspace tool with zero cognitive interference.
- * Based on Anthropic's research on the "think" tool approach for enhanced
- * problem-solving in complex tool use situations.
+ * Implements a persistent thinking workspace tool with structured session naming
+ * and search capabilities. Based on Anthropic's research on the "think" tool 
+ * approach for enhanced problem-solving in complex tool use situations.
  * 
- * The tool preserves reasoning text without modification, creating a dedicated
- * space for structured thinking during complex tasks.
- * 
- * Enhanced with:
- * - Persistent session storage to maintain thinking context across device restarts
- * - Smart Context Injection for builds_on relationships (automatically surfaces
- *   reasoning chains, conflicting thoughts, and supporting evidence)
+ * Features:
+ * - Structured session naming (category:name:subcategory)
+ * - Session search capabilities
+ * - Persistent storage across sessions
+ * - Zero cognitive interference
  */
 
-// Session storage directory - allow override via environment variable for testing
-const SESSION_DIR = process.env.SESSION_DIR || path.join(os.homedir(), '.minimal-think-sessions');
+// Configuration via environment variables
+const SESSION_DIR = process.env.SESSION_DIR || path.join(process.cwd(), '.session-think-sessions');
+const SESSION_MAX_RETURN = parseInt(process.env.SESSION_MAX_RETURN) || 50;
+const SESSION_NAME_PATTERN = process.env.SESSION_NAME_PATTERN || '^[a-zA-Z0-9_-]+(:[a-zA-Z0-9_-]+){2,}$';
 
 // Ensure session directory exists
 async function ensureSessionDir() {
@@ -35,10 +34,46 @@ async function ensureSessionDir() {
   }
 }
 
+// Validate session name format
+function validateSessionName(sessionName) {
+  const pattern = new RegExp(SESSION_NAME_PATTERN);
+  if (!pattern.test(sessionName)) {
+    throw new Error(`Invalid session name format. Expected format: category:name:subcategory (e.g., thesis:NVDA:ai_dominance)`);
+  }
+  return sessionName;
+}
+
+// Sanitize session name for filesystem
+function sanitizeSessionName(sessionName) {
+  // First collapse multiple underscores to single underscore (prevent injection)
+  let sanitized = sessionName.replace(/_+/g, '_');
+  // Replace colons with triple underscore (our separator)
+  sanitized = sanitized.replace(/:/g, '___');
+  // Remove any characters not allowed in filenames (Windows + Unix safe)
+  sanitized = sanitized.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+  return sanitized;
+}
+
+// Desanitize filename back to session name
+function desanitizeFilename(filename) {
+  // Remove .json extension
+  let name = filename.replace('.json', '');
+  // Convert triple underscore back to colon
+  return name.replace(/___/g, ':');
+}
+
+// Generate random session name (TEMP format)
+function generateRandomSessionName() {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8);
+  return `TEMP:${timestamp}:${random}`;
+}
+
 // Load a session from disk
-async function loadSession(sessionId) {
+async function loadSession(sessionName) {
   try {
-    const sessionPath = path.join(SESSION_DIR, `${sessionId}.json`);
+    const sanitized = sanitizeSessionName(sessionName);
+    const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
     const data = await fs.readFile(sessionPath, 'utf8');
     return JSON.parse(data);
   } catch (error) {
@@ -48,303 +83,310 @@ async function loadSession(sessionId) {
 }
 
 // Save a session to disk
-async function saveSession(sessionId, thoughts) {
+async function saveSession(sessionName, thoughts) {
   try {
-    const sessionPath = path.join(SESSION_DIR, `${sessionId}.json`);
+    const sanitized = sanitizeSessionName(sessionName);
+    const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
     await fs.writeFile(sessionPath, JSON.stringify(thoughts, null, 2), 'utf8');
   } catch (error) {
-    console.error(`Failed to save session ${sessionId}:`, error);
-  }
-}
-
-// Get the default session ID
-async function getDefaultSession() {
-  try {
-    const defaultSessionPath = path.join(SESSION_DIR, 'defaultSession.json');
-    const data = await fs.readFile(defaultSessionPath, 'utf8');
-    const { defaultSessionId } = JSON.parse(data);
-    return defaultSessionId;
-  } catch (error) {
-    // No default session yet
-    return null;
-  }
-}
-
-// Set the default session ID
-async function setDefaultSession(sessionId) {
-  try {
-    const defaultSessionPath = path.join(SESSION_DIR, 'defaultSession.json');
-    await fs.writeFile(defaultSessionPath, JSON.stringify({ defaultSessionId: sessionId }), 'utf8');
-  } catch (error) {
-    console.error(`Failed to set default session ${sessionId}:`, error);
-  }
-}
-
-// Manual cleanup utility for old sessions
-async function cleanupOldSessions(maxAgeDays = 90) {
-  try {
-    await ensureSessionDir();
-    const files = await fs.readdir(SESSION_DIR);
-    const now = new Date();
-    let deletedCount = 0;
-    
-    for (const file of files) {
-      if (!file.endsWith('.json') || file === 'defaultSession.json') continue;
-      
-      const filePath = path.join(SESSION_DIR, file);
-      const stats = await fs.stat(filePath);
-      const fileAge = (now - stats.mtime) / (1000 * 60 * 60 * 24); // age in days
-      
-      if (fileAge > maxAgeDays) {
-        await fs.unlink(filePath);
-        console.error(`Deleted old session: ${file} (${fileAge.toFixed(1)} days old)`);
-        deletedCount++;
-      }
-    }
-    
-    return { deletedCount, maxAgeDays };
-  } catch (error) {
-    console.error('Session cleanup failed:', error);
+    console.error(`Failed to save session ${sessionName}:`, error);
     throw error;
   }
 }
 
+// Get list of all session files
+async function listSessionFiles() {
+  try {
+    await ensureSessionDir();
+    const files = await fs.readdir(SESSION_DIR);
+    return files.filter(file => file.endsWith('.json'));
+  } catch (error) {
+    console.error('Failed to list session files:', error);
+    return [];
+  }
+}
+
+// Build reasoning chain for "builds_on" relationships
+function buildReasoningChain(thoughtId, thoughts) {
+  const chain = [];
+  const visited = new Set();
+  let currentId = thoughtId;
+  
+  while (currentId && !visited.has(currentId) && chain.length < 20) {
+    visited.add(currentId);
+    const thought = thoughts.find(t => t.id === currentId);
+    
+    if (!thought) break;
+    
+    chain.unshift({
+      id: thought.id,
+      content_preview: thought.content.substring(0, 120) + (thought.content.length > 120 ? "..." : ""),
+      mode: thought.mode,
+      timestamp: thought.timestamp,
+      relationship_type: thought.relationship_type
+    });
+    
+    if (thought.relationship_type === 'builds_on' && thought.relates_to) {
+      currentId = thought.relates_to;
+    } else {
+      break;
+    }
+  }
+  
+  const maxChainLength = 7;
+  if (chain.length > maxChainLength) {
+    const truncatedChain = chain.slice(-maxChainLength);
+    truncatedChain[0] = {
+      ...truncatedChain[0],
+      truncated: true,
+      note: `... (${chain.length - maxChainLength} earlier thoughts in chain)`
+    };
+    return { chain: truncatedChain, total_length: chain.length, truncated: true };
+  }
+  
+  return { chain: chain, total_length: chain.length, truncated: false };
+}
+
+// Simple relevance scoring function
+function calculateRelevanceScore(thought, queryLower) {
+  let score = 0;
+  const content = thought.content.toLowerCase();
+  
+  if (content.includes(queryLower)) score += 10;
+  
+  const queryWords = queryLower.split(/\s+/);
+  queryWords.forEach(word => {
+    if (content.includes(word)) score += 2;
+  });
+  
+  if (thought.tags) {
+    thought.tags.forEach(tag => {
+      if (tag.toLowerCase().includes(queryLower)) score += 5;
+    });
+  }
+  
+  if (thought.mode && thought.mode.toLowerCase().includes(queryLower)) score += 3;
+  if (thought.relates_to || thought.relationship_type) score += 1;
+  
+  return score;
+}
+
 // Create MCP server instance
 const server = new McpServer({
-  name: "minimal-think-mcp",
-  version: "1.2.4"
+  name: "session-think-mcp",
+  version: "1.3.0"
 });
 
-// Register the enhanced think tool with persistent sessions and relationship tracking
+// ============================================
+// Tool: think
+// ============================================
 server.registerTool(
   "think",
   {
     title: "Think Tool",
-    description: "A persistent thinking workspace that preserves reasoning across sessions. Creates dedicated space for structured thinking during complex tasks with relationship tracking.",
+    description: `A persistent thinking workspace that preserves reasoning across sessions. 
+
+IMPORTANT: Always provide a sessionName parameter with format: category:name:subcategory
+Examples:
+- thesis:NVDA:ai_dominance
+- topic:research:quantum_computing  
+- project:website:redesign
+
+If no sessionName is provided, a temporary session will be generated (TEMP:timestamp:random).
+
+The sessionName is used to store and retrieve your thoughts. Use consistent naming to maintain context across conversations.`,
     inputSchema: {
       reasoning: z.string().describe("Your thinking, reasoning, or analysis text"),
-      sessionId: z.string().optional().describe("Session ID to continue an existing thinking process"),
-      useDefaultSession: z.boolean().optional().default(false).describe("Use the default session automatically"),
-      setAsDefault: z.boolean().optional().default(false).describe("Set this session as the default for future thinking"),
+      sessionName: z.string().optional().describe("Session name in format: category:name:subcategory (e.g., thesis:NVDA:ai_dominance). IMPORTANT: Always provide this for persistent sessions."),
       mode: z.enum(["linear", "creative", "critical", "strategic", "empathetic"]).optional()
         .describe("Optional thinking mode to structure your reasoning"),
       tags: z.array(z.string()).optional().describe("Optional tags for categorizing thoughts"),
-      newChat: z.boolean().optional().default(false).describe("Force a new session even if sessionId is provided"),
       relates_to: z.string().optional().describe("ID of thought this relates to"),
       relationship_type: z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"]).optional().describe("Type of relationship to the referenced thought")
     }
   },
-  async ({ reasoning, sessionId, useDefaultSession, setAsDefault, mode, tags, newChat, relates_to, relationship_type }) => {
-    // Ensure session directory exists
-    await ensureSessionDir();
-    
-    // Determine session ID logic:
-    // 1. If newChat is true, always create a new session
-    // 2. If sessionId is provided and newChat is false, use that (highest priority)
-    // 3. If useDefaultSession is true, try to get default session
-    // 4. If no default session or useDefaultSession is false, create new session
-    let session = newChat ? null : sessionId;
-    let usedDefaultSession = false;
-    let isNewSession = false;
-    
-    if (!session && useDefaultSession) {
-      session = await getDefaultSession();
-      usedDefaultSession = !!session;
-    }
-    
-    // If we still don't have a session ID, generate a new one
-    if (!session) {
-      session = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      isNewSession = true;
-    }
-    
-    // Load existing thoughts for this session
-    const thoughts = await loadSession(session);
-    
-    // Add new thought
-    const thoughtId = `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const thoughtObj = {
-      id: thoughtId,
-      content: reasoning,
-      mode: mode || "linear",
-      tags: tags || [],
-      timestamp: new Date().toISOString(),
-      relates_to: null,
-      relationship_type: null,
-      relationships_in: [], // thoughts that reference this thought
-      relationships_out: []  // thoughts this thought references
-    };
+  async ({ reasoning, sessionName, mode, tags, relates_to, relationship_type }) => {
+    try {
+      await ensureSessionDir();
+      
+      // Determine session name
+      let session = sessionName;
+      let isNewSession = false;
+      
+      if (!session) {
+        session = generateRandomSessionName();
+        isNewSession = true;
+      } else {
+        validateSessionName(session);
+        // Check if this is a new session
+        const existingThoughts = await loadSession(session);
+        isNewSession = existingThoughts.length === 0;
+      }
+      
+      // Load existing thoughts for this session
+      const thoughts = await loadSession(session);
+      
+      // Add new thought
+      const thoughtId = `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const thoughtObj = {
+        id: thoughtId,
+        content: reasoning,
+        mode: mode || "linear",
+        tags: tags || [],
+        timestamp: new Date().toISOString(),
+        relates_to: null,
+        relationship_type: null,
+        relationships_in: [],
+        relationships_out: []
+      };
 
-    // Validate and add relationship tracking
-    if (relates_to && relationship_type) {
-      // Prevent self-reference
-      if (relates_to === thoughtId) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference self" }) }] };
-      }
-      
-      const referencedThought = thoughts.find(t => t.id === relates_to);
-      if (!referencedThought) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: "Referenced thought not found", thought_id: relates_to }) }] };
-      }
-      
-      // Refined temporal check - compare to current thought's timestamp
-      if (new Date(referencedThought.timestamp) > new Date(thoughtObj.timestamp)) {
-        return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference future thoughts" }) }] };
-      }
-      
-      // Now use the same referencedThought for relationship tracking
-      referencedThought.relationships_in.push({ thought_id: thoughtId, relationship_type });
-      thoughtObj.relationships_out.push({ thought_id: relates_to, relationship_type });
-      thoughtObj.relates_to = relates_to;
-      thoughtObj.relationship_type = relationship_type;
-    }
-
-    thoughts.push(thoughtObj);
-    
-    // Save updated session
-    await saveSession(session, thoughts);
-    
-    // Set as default if requested
-    if (setAsDefault) {
-      await setDefaultSession(session);
-    }
-    
-    // Add related thought context for AI
-    let related_context = null;
-    let reasoning_chain = null;
-    
-    if (relates_to && relationship_type) {
-      const related_thought = thoughts.find(t => t.id === relates_to);
-      if (related_thought) {
-        related_context = {
-          relationship: relationship_type,
-          related_thought_id: relates_to,
-          related_content: related_thought.content.substring(0, 200) + "...",
-          related_mode: related_thought.mode
-        };
+      // Validate and add relationship tracking
+      if (relates_to && relationship_type) {
+        if (relates_to === thoughtId) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference self" }) }] };
+        }
         
-        // context injection for builds_on relationships
-        if (relationship_type === 'builds_on') {
+        const referencedThought = thoughts.find(t => t.id === relates_to);
+        if (!referencedThought) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Referenced thought not found", thought_id: relates_to }) }] };
+        }
+        
+        if (new Date(referencedThought.timestamp) > new Date(thoughtObj.timestamp)) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference future thoughts" }) }] };
+        }
+        
+        referencedThought.relationships_in.push({ thought_id: thoughtId, relationship_type });
+        thoughtObj.relationships_out.push({ thought_id: relates_to, relationship_type });
+        thoughtObj.relates_to = relates_to;
+        thoughtObj.relationship_type = relationship_type;
+      }
+
+      thoughts.push(thoughtObj);
+      
+      // Save updated session
+      await saveSession(session, thoughts);
+      
+      // Add related thought context for AI
+      let related_context = null;
+      let reasoning_chain = null;
+      
+      if (relates_to && relationship_type) {
+        const related_thought = thoughts.find(t => t.id === relates_to);
+        if (related_thought) {
+          related_context = {
+            relationship: relationship_type,
+            related_thought_id: relates_to,
+            related_content: related_thought.content.substring(0, 200) + "...",
+            related_mode: related_thought.mode
+          };
+          
+          if (relationship_type === 'builds_on') {
             const chain = buildReasoningChain(relates_to, thoughts);
             
-            // Find conflicting thoughts (max 3)
             const conflicts = thoughts.filter(t => 
-                t.relationships_out.some(rel => 
-                    rel.thought_id === relates_to && rel.relationship_type === 'contradicts'
-                )
+              t.relationships_out.some(rel => 
+                rel.thought_id === relates_to && rel.relationship_type === 'contradicts'
+              )
             ).slice(0, 3);
             
-            // Find supporting evidence (max 3)
             const supports = thoughts.filter(t => 
-                t.relationships_out.some(rel => 
-                    rel.thought_id === relates_to && rel.relationship_type === 'supports'
-                )
+              t.relationships_out.some(rel => 
+                rel.thought_id === relates_to && rel.relationship_type === 'supports'
+              )
             ).slice(0, 3);
             
-            // Build enhanced context object
             related_context = {
-                type: 'builds_on_enhanced',
-                chain_preview: chain.chain.slice(0, 5).map(t => t.content_preview),
-                conflicts: conflicts.map(t => t.content.substring(0, 80) + "..."),
-                supports: supports.map(t => t.content.substring(0, 80) + "...")
+              type: 'builds_on_enhanced',
+              chain_preview: chain.chain.slice(0, 5).map(t => t.content_preview),
+              conflicts: conflicts.map(t => t.content.substring(0, 80) + "..."),
+              supports: supports.map(t => t.content.substring(0, 80) + "...")
             };
-            reasoning_chain = chain; // maintain backward compatibility
+            reasoning_chain = chain;
+          }
         }
       }
+      
+      // Generate the response JSON
+      const responseJson = {
+        thinking: reasoning,
+        thoughtId: thoughtId,
+        sessionName: session,
+        mode: mode || "linear",
+        tags: tags || [],
+        timestamp: new Date().toISOString(),
+        thoughtCount: thoughts.length,
+        preserved: true,
+        related_context: related_context,
+        reasoning_chain: reasoning_chain,
+        isNewSession: isNewSession
+      };
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(responseJson, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ error: error.message }, null, 2)
+        }]
+      };
     }
-    
-    // Generate the response JSON
-    const responseJson = {
-      thinking: reasoning,
-      thoughtId: thoughtId,
-      sessionId: session,
-      mode: mode || "linear",
-      tags: tags || [],
-      timestamp: new Date().toISOString(),
-      thoughtCount: thoughts.length,
-      preserved: true,
-      related_context: related_context,
-      reasoning_chain: reasoning_chain,
-      usingDefaultSession: usedDefaultSession,
-      isDefaultSession: setAsDefault || usedDefaultSession,
-      isNewSession: isNewSession
-    };
-    
-    // Create a note for Claude about session continuity
-    const claudeNote = `
-<!-- 
-Session ID: ${session}
-In this chat, I should automatically include this session ID in future "think" tool calls 
-unless instructed to start a new session or use a different session.
-
-For future think tool calls in this chat, I'll use:
-{
-  "reasoning": "...",
-  "sessionId": "${session}"
-}
--->`;
-    
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify(responseJson, null, 2) + claudeNote
-      }]
-    };
   }
 );
 
-// List available sessions
+// ============================================
+// Tool: list_sessions
+// ============================================
 server.registerTool(
   "list_sessions",
   {
     title: "List Sessions",
-    description: "List all available thinking sessions",
-    inputSchema: {}
+    description: "List all available thinking sessions with metadata.",
+    inputSchema: {
+      limit: z.number().min(1).max(100).optional().default(50).describe("Maximum number of sessions to return"),
+      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+    }
   },
-  async () => {
+  async ({ limit = 50, offset = 0 }) => {
     try {
       await ensureSessionDir();
-      const files = await fs.readdir(SESSION_DIR);
+      const files = await listSessionFiles();
       
-      // Get default session
-      let defaultSessionId = null;
-      try {
-        defaultSessionId = await getDefaultSession();
-      } catch (error) {
-        // No default session
-      }
-      
-      const sessionInfo = await Promise.all(files
-        .filter(file => file.endsWith('.json') && file !== 'defaultSession.json')
-        .map(async file => {
-          const sessionId = file.replace('.json', '');
+      const sessionInfo = await Promise.all(
+        files.slice(offset, offset + limit).map(async file => {
+          const sessionName = desanitizeFilename(file);
           const filePath = path.join(SESSION_DIR, file);
           const stats = await fs.stat(filePath);
           
           try {
-            const thoughts = await loadSession(sessionId);
+            const thoughts = await loadSession(sessionName);
             return {
-              sessionId,
+              sessionName,
               thoughtCount: thoughts.length,
               firstThought: thoughts[0]?.timestamp || null,
               lastThought: thoughts[thoughts.length - 1]?.timestamp || null,
-              lastModified: stats.mtime.toISOString(),
-              isDefault: sessionId === defaultSessionId
+              lastModified: stats.mtime.toISOString()
             };
           } catch (e) {
             return {
-              sessionId,
+              sessionName,
               error: "Could not read session data",
-              lastModified: stats.mtime.toISOString(),
-              isDefault: sessionId === defaultSessionId
+              lastModified: stats.mtime.toISOString()
             };
           }
-        }));
+        })
+      );
       
       const responseJson = {
         sessions: sessionInfo,
         count: sessionInfo.length,
-        defaultSessionId,
+        total: files.length,
+        limit,
+        offset,
         timestamp: new Date().toISOString()
       };
       
@@ -369,64 +411,49 @@ server.registerTool(
   }
 );
 
-// View a specific session
+// ============================================
+// Tool: view_session
+// ============================================
 server.registerTool(
   "view_session",
   {
     title: "View Session",
-    description: "View the complete contents of a thinking session",
+    description: "View the contents of a thinking session. Returns the last N thoughts by default.",
     inputSchema: {
-      sessionId: z.string().optional().describe("Session ID to view. If not provided, the default session will be used if available.")
+      sessionName: z.string().describe("Session name to view (format: category:name:subcategory)"),
+      limit: z.number().min(1).max(200).optional().describe("Maximum number of thoughts to return (default: SESSION_MAX_RETURN env or 50)"),
+      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
     }
   },
-  async ({ sessionId }) => {
+  async ({ sessionName, limit, offset = 0 }) => {
     try {
-      // If no sessionId provided, try to use default session
-      let session = sessionId;
-      let usedDefaultSession = false;
+      validateSessionName(sessionName);
       
-      if (!session) {
-        session = await getDefaultSession();
-        usedDefaultSession = !!session;
-        
-        if (!session) {
-          return {
-            content: [{
-              type: "text",
-              text: JSON.stringify({
-                error: "No session ID provided and no default session set",
-                message: "Please provide a session ID or set a default session first"
-              }, null, 2)
-            }]
-          };
-        }
-      }
+      const thoughts = await loadSession(sessionName);
+      const maxReturn = limit || SESSION_MAX_RETURN;
       
-      const thoughts = await loadSession(session);
+      // Return paginated thoughts (most recent first by default)
+      const paginatedThoughts = thoughts.slice(offset, offset + maxReturn);
       
       const responseJson = {
-        sessionId: session,
-        thoughts,
-        count: thoughts.length,
-        timestamp: new Date().toISOString(),
-        usingDefaultSession: usedDefaultSession
+        sessionName: sessionName,
+        thoughts: paginatedThoughts,
+        count: paginatedThoughts.length,
+        totalThoughts: thoughts.length,
+        limit: maxReturn,
+        offset,
+        hasMore: offset + maxReturn < thoughts.length,
+        timestamp: new Date().toISOString()
       };
-      
-      // Create a note for Claude about session continuity
-      const claudeNote = `
-<!-- 
-Session ID: ${session}
-I now know about this session and should use it if the user wants to continue this thinking process.
--->`;
       
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(responseJson, null, 2) + claudeNote
+          text: JSON.stringify(responseJson, null, 2)
         }]
       };
     } catch (error) {
-      console.error(`Failed to view session ${sessionId}:`, error);
+      console.error(`Failed to view session ${sessionName}:`, error);
       return {
         content: [{
           type: "text",
@@ -440,45 +467,38 @@ I now know about this session and should use it if the user wants to continue th
   }
 );
 
-// Delete a session
+// ============================================
+// Tool: delete_session
+// ============================================
 server.registerTool(
   "delete_session",
   {
     title: "Delete Session",
-    description: "Delete a thinking session",
+    description: "Delete a thinking session permanently.",
     inputSchema: {
-      sessionId: z.string().describe("Session ID to delete")
+      sessionName: z.string().describe("Session name to delete (format: category:name:subcategory)")
     }
   },
-  async ({ sessionId }) => {
+  async ({ sessionName }) => {
     try {
-      const sessionPath = path.join(SESSION_DIR, `${sessionId}.json`);
-      await fs.unlink(sessionPath);
+      validateSessionName(sessionName);
       
-      // If this was the default session, clear that too
-      const defaultSessionId = await getDefaultSession();
-      if (defaultSessionId === sessionId) {
-        const defaultSessionPath = path.join(SESSION_DIR, 'defaultSession.json');
-        try {
-          await fs.unlink(defaultSessionPath);
-        } catch (error) {
-          // Ignore if file doesn't exist
-        }
-      }
+      const sanitized = sanitizeSessionName(sessionName);
+      const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
+      await fs.unlink(sessionPath);
       
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
             status: "success",
-            message: `Session ${sessionId} deleted successfully`,
-            wasDefault: defaultSessionId === sessionId,
+            message: `Session ${sessionName} deleted successfully`,
             timestamp: new Date().toISOString()
           }, null, 2)
         }]
       };
     } catch (error) {
-      console.error(`Failed to delete session ${sessionId}:`, error);
+      console.error(`Failed to delete session ${sessionName}:`, error);
       return {
         content: [{
           type: "text",
@@ -492,74 +512,67 @@ server.registerTool(
   }
 );
 
-// Set or reset default session
+// ============================================
+// Tool: rename_session
+// ============================================
 server.registerTool(
-  "set_default_session",
+  "rename_session",
   {
-    title: "Set Default Session",
-    description: "Set or reset the default thinking session",
+    title: "Rename Session",
+    description: "Rename an existing session to a new name.",
     inputSchema: {
-      sessionId: z.string().optional().describe("Session ID to set as default. If not provided, the default session will be cleared.")
+      oldSessionName: z.string().describe("Current session name (format: category:name:subcategory)"),
+      newSessionName: z.string().describe("New session name (format: category:name:subcategory)")
     }
   },
-  async ({ sessionId }) => {
+  async ({ oldSessionName, newSessionName }) => {
     try {
-      if (sessionId) {
-        // Verify the session exists before setting it as default
-        const sessionPath = path.join(SESSION_DIR, `${sessionId}.json`);
-        try {
-          await fs.access(sessionPath);
-        } catch (error) {
-          return {
-            content: [{
-              type: "text",
-              text: JSON.stringify({
-                error: "Invalid session ID",
-                message: `Session ${sessionId} does not exist`
-              }, null, 2)
-            }]
-          };
-        }
-        
-        // Set new default session
-        await setDefaultSession(sessionId);
+      validateSessionName(oldSessionName);
+      validateSessionName(newSessionName);
+      
+      // Load old session
+      const thoughts = await loadSession(oldSessionName);
+      
+      if (thoughts.length === 0) {
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
-              status: "success",
-              message: `Default session set to ${sessionId}`,
-              timestamp: new Date().toISOString()
-            }, null, 2)
-          }]
-        };
-      } else {
-        // Clear default session
-        const defaultSessionPath = path.join(SESSION_DIR, 'defaultSession.json');
-        try {
-          await fs.unlink(defaultSessionPath);
-        } catch (error) {
-          // Ignore if file doesn't exist
-        }
-        
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              status: "success",
-              message: "Default session cleared",
-              timestamp: new Date().toISOString()
+              error: "Session not found",
+              message: `Session ${oldSessionName} does not exist or is empty`
             }, null, 2)
           }]
         };
       }
-    } catch (error) {
-      console.error(`Failed to set default session:`, error);
+      
+      // Save to new name
+      await saveSession(newSessionName, thoughts);
+      
+      // Delete old session
+      const oldSanitized = sanitizeSessionName(oldSessionName);
+      const oldPath = path.join(SESSION_DIR, `${oldSanitized}.json`);
+      await fs.unlink(oldPath);
+      
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            error: "Failed to set default session",
+            status: "success",
+            message: `Session renamed from ${oldSessionName} to ${newSessionName}`,
+            oldName: oldSessionName,
+            newName: newSessionName,
+            thoughtCount: thoughts.length,
+            timestamp: new Date().toISOString()
+          }, null, 2)
+        }]
+      };
+    } catch (error) {
+      console.error(`Failed to rename session:`, error);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "Failed to rename session",
             message: error.message
           }, null, 2)
         }]
@@ -568,28 +581,274 @@ server.registerTool(
   }
 );
 
-// Manual cleanup of old sessions
+// ============================================
+// Tool: search_in_session
+// ============================================
+server.registerTool(
+  "search_in_session",
+  {
+    title: "Search in Session",
+    description: "Search for thoughts within a specific session by keyword.",
+    inputSchema: {
+      sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
+      query: z.string().describe("Search query (searches content, tags, and modes)"),
+      limit: z.number().min(1).max(50).optional().default(10).describe("Maximum number of results to return"),
+      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+    }
+  },
+  async ({ sessionName, query, limit = 10, offset = 0 }) => {
+    try {
+      validateSessionName(sessionName);
+      
+      const thoughts = await loadSession(sessionName);
+      
+      if (thoughts.length === 0) {
+        return { 
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({ 
+              error: "Session not found or empty",
+              sessionName: sessionName 
+            }, null, 2) 
+          }] 
+        };
+      }
+      
+      const queryLower = query.toLowerCase();
+      const searchResults = thoughts
+        .filter(t => {
+          const contentMatch = t.content.toLowerCase().includes(queryLower);
+          const tagMatch = t.tags && t.tags.some(tag => tag.toLowerCase().includes(queryLower));
+          const modeMatch = t.mode && t.mode.toLowerCase().includes(queryLower);
+          return contentMatch || tagMatch || modeMatch;
+        })
+        .map(t => ({
+          id: t.id,
+          content_preview: t.content.substring(0, 150) + (t.content.length > 150 ? "..." : ""),
+          mode: t.mode,
+          tags: t.tags,
+          timestamp: t.timestamp,
+          relates_to: t.relates_to,
+          relationship_type: t.relationship_type,
+          relevance_score: calculateRelevanceScore(t, queryLower)
+        }))
+        .sort((a, b) => b.relevance_score - a.relevance_score)
+        .slice(offset, offset + limit);
+      
+      const response = {
+        sessionName: sessionName,
+        query: query,
+        results: searchResults,
+        count: searchResults.length,
+        offset,
+        limit,
+        timestamp: new Date().toISOString()
+      };
+      
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify(response, null, 2) 
+        }] 
+      };
+    } catch (error) {
+      console.error('Failed to search in session:', error);
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: "Failed to search in session", 
+            message: error.message 
+          }, null, 2) 
+        }] 
+      };
+    }
+  }
+);
+
+// ============================================
+// Tool: search_all_sessions
+// ============================================
+server.registerTool(
+  "search_all_sessions",
+  {
+    title: "Search All Sessions",
+    description: "Search for sessions containing thoughts matching a keyword. Returns session indicators, not full content.",
+    inputSchema: {
+      query: z.string().describe("Search query (searches content, tags, and modes across all sessions)"),
+      limit: z.number().min(1).max(50).optional().default(20).describe("Maximum number of sessions to return"),
+      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+    }
+  },
+  async ({ query, limit = 20, offset = 0 }) => {
+    try {
+      await ensureSessionDir();
+      const files = await listSessionFiles();
+      
+      const queryLower = query.toLowerCase();
+      const matchingSessions = [];
+      
+      for (const file of files) {
+        const sessionName = desanitizeFilename(file);
+        const thoughts = await loadSession(sessionName);
+        
+        // Count matching thoughts
+        const matchingThoughts = thoughts.filter(t => {
+          const contentMatch = t.content.toLowerCase().includes(queryLower);
+          const tagMatch = t.tags && t.tags.some(tag => tag.toLowerCase().includes(queryLower));
+          const modeMatch = t.mode && t.mode.toLowerCase().includes(queryLower);
+          return contentMatch || tagMatch || modeMatch;
+        });
+        
+        if (matchingThoughts.length > 0) {
+          const filePath = path.join(SESSION_DIR, file);
+          const stats = await fs.stat(filePath);
+          
+          matchingSessions.push({
+            sessionName: sessionName,
+            matchingThoughts: matchingThoughts.length,
+            totalThoughts: thoughts.length,
+            lastModified: stats.mtime.toISOString(),
+            relevanceScore: matchingThoughts.length
+          });
+        }
+      }
+      
+      // Sort by relevance (number of matching thoughts)
+      matchingSessions.sort((a, b) => b.relevanceScore - a.relevanceScore);
+      
+      const paginatedResults = matchingSessions.slice(offset, offset + limit);
+      
+      const response = {
+        query: query,
+        sessions: paginatedResults,
+        count: paginatedResults.length,
+        totalMatching: matchingSessions.length,
+        offset,
+        limit,
+        timestamp: new Date().toISOString()
+      };
+      
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify(response, null, 2) 
+        }] 
+      };
+    } catch (error) {
+      console.error('Failed to search all sessions:', error);
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: "Failed to search all sessions", 
+            message: error.message 
+          }, null, 2) 
+        }] 
+      };
+    }
+  }
+);
+
+// ============================================
+// Tool: get_session_info
+// ============================================
+server.registerTool(
+  "get_session_info",
+  {
+    title: "Get Session Info",
+    description: "Get metadata about a specific session without loading all thoughts.",
+    inputSchema: {
+      sessionName: z.string().describe("Session name (format: category:name:subcategory)")
+    }
+  },
+  async ({ sessionName }) => {
+    try {
+      validateSessionName(sessionName);
+      
+      const thoughts = await loadSession(sessionName);
+      const sanitized = sanitizeSessionName(sessionName);
+      const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
+      
+      let stats;
+      try {
+        stats = await fs.stat(sessionPath);
+      } catch (e) {
+        stats = null;
+      }
+      
+      const response = {
+        sessionName: sessionName,
+        exists: thoughts.length > 0 || stats !== null,
+        thoughtCount: thoughts.length,
+        firstThought: thoughts[0]?.timestamp || null,
+        lastThought: thoughts[thoughts.length - 1]?.timestamp || null,
+        created: stats?.birthtime?.toISOString() || null,
+        lastModified: stats?.mtime?.toISOString() || null,
+        modes: [...new Set(thoughts.map(t => t.mode))],
+        tags: [...new Set(thoughts.flatMap(t => t.tags || []))],
+        timestamp: new Date().toISOString()
+      };
+      
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify(response, null, 2) 
+        }] 
+      };
+    } catch (error) {
+      console.error('Failed to get session info:', error);
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: "Failed to get session info", 
+            message: error.message 
+          }, null, 2) 
+        }] 
+      };
+    }
+  }
+);
+
+// ============================================
+// Tool: cleanup_sessions
+// ============================================
 server.registerTool(
   "cleanup_sessions",
   {
     title: "Cleanup Old Sessions",
-    description: "Manually clean up old thinking sessions",
+    description: "Manually clean up old thinking sessions based on age.",
     inputSchema: {
       maxAgeDays: z.number().min(1).default(90).describe("Maximum age in days before sessions are deleted")
     }
   },
   async ({ maxAgeDays }) => {
     try {
-      const result = await cleanupOldSessions(maxAgeDays);
+      await ensureSessionDir();
+      const files = await listSessionFiles();
+      const now = new Date();
+      let deletedCount = 0;
+      
+      for (const file of files) {
+        const filePath = path.join(SESSION_DIR, file);
+        const stats = await fs.stat(filePath);
+        const fileAge = (now - stats.mtime) / (1000 * 60 * 60 * 24);
+        
+        if (fileAge > maxAgeDays) {
+          await fs.unlink(filePath);
+          deletedCount++;
+        }
+      }
       
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
             status: "success",
-            deletedCount: result.deletedCount,
-            maxAgeDays: result.maxAgeDays,
-            message: `Deleted ${result.deletedCount} sessions older than ${result.maxAgeDays} days`,
+            deletedCount: deletedCount,
+            maxAgeDays: maxAgeDays,
+            message: `Deleted ${deletedCount} sessions older than ${maxAgeDays} days`,
             timestamp: new Date().toISOString()
           }, null, 2)
         }]
@@ -609,52 +868,49 @@ server.registerTool(
   }
 );
 
-// Find thought relationships tool - helps AI discover related thoughts efficiently
+// ============================================
+// Tool: find_thought_relationships
+// ============================================
 server.registerTool(
   "find_thought_relationships",
   {
     title: "Find Thought Relationships",
-    description: "Search for thoughts that could be related to current reasoning, helping AI build coherent argument chains",
+    description: "Search for thoughts that could be related to current reasoning within a session.",
     inputSchema: {
-      query: z.string().describe("Search query to find related thoughts (searches content, tags, and modes)"),
-      sessionId: z.string().optional().describe("Session ID to search in. If not provided, the default session will be used if available."),
+      sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
+      query: z.string().describe("Search query to find related thoughts"),
       relationship_types: z.array(z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"])).optional().describe("Filter by specific relationship types"),
-      exclude_thought_id: z.string().optional().describe("Exclude a specific thought ID from results (useful to avoid self-reference)"),
+      exclude_thought_id: z.string().optional().describe("Exclude a specific thought ID from results"),
       limit: z.number().min(1).max(20).default(10).describe("Maximum number of results to return")
     }
   },
-  async ({ query, sessionId, relationship_types, exclude_thought_id, limit }) => {
+  async ({ sessionName, query, relationship_types, exclude_thought_id, limit = 10 }) => {
     try {
-      await ensureSessionDir();
+      validateSessionName(sessionName);
       
-      // Determine session to use
-      let session = sessionId;
-      if (!session) {
-        session = await getDefaultSession();
-        if (!session) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "No session ID provided and no default session set" }) }] };
-        }
-      }
-      
-      const thoughts = await loadSession(session);
+      const thoughts = await loadSession(sessionName);
       
       if (thoughts.length === 0) {
-        return { content: [{ type: "text", text: JSON.stringify({ results: [], total: 0, query: query }) }] };
+        return { 
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({ 
+              error: "Session not found or empty",
+              sessionName: sessionName 
+            }, null, 2) 
+          }] 
+        };
       }
       
-      // Search logic
       const queryLower = query.toLowerCase();
       const searchResults = thoughts
         .filter(t => {
-          // Exclude specific thought if requested
           if (exclude_thought_id && t.id === exclude_thought_id) return false;
           
-          // Filter by relationship types if specified
           if (relationship_types && relationship_types.length > 0) {
             if (!t.relationship_type || !relationship_types.includes(t.relationship_type)) return false;
           }
           
-          // Search in content, tags, and mode
           const contentMatch = t.content.toLowerCase().includes(queryLower);
           const tagMatch = t.tags && t.tags.some(tag => tag.toLowerCase().includes(queryLower));
           const modeMatch = t.mode && t.mode.toLowerCase().includes(queryLower);
@@ -669,124 +925,39 @@ server.registerTool(
           timestamp: t.timestamp,
           relates_to: t.relates_to,
           relationship_type: t.relationship_type,
-          // Calculate relevance score (simple scoring)
           relevance_score: calculateRelevanceScore(t, queryLower)
         }))
         .sort((a, b) => b.relevance_score - a.relevance_score)
         .slice(0, limit);
       
       const response = {
-        results: searchResults,
-        total: searchResults.length,
+        sessionName: sessionName,
         query: query,
-        sessionId: session,
-        searched_thoughts: thoughts.length
+        results: searchResults,
+        count: searchResults.length,
+        timestamp: new Date().toISOString()
       };
       
-      return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
-      
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify(response, null, 2) 
+        }] 
+      };
     } catch (error) {
       console.error('Failed to find thought relationships:', error);
-      return { content: [{ type: "text", text: JSON.stringify({ error: "Failed to find relationships", message: error.message }) }] };
+      return { 
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: "Failed to find relationships", 
+            message: error.message 
+          }, null, 2) 
+        }] 
+      };
     }
   }
 );
-
-// Simple relevance scoring function
-function calculateRelevanceScore(thought, queryLower) {
-  let score = 0;
-  const content = thought.content.toLowerCase();
-  
-  // Exact phrase match gets highest score
-  if (content.includes(queryLower)) {
-    score += 10;
-  }
-  
-  // Word matches
-  const queryWords = queryLower.split(/\s+/);
-  queryWords.forEach(word => {
-    if (content.includes(word)) {
-      score += 2;
-    }
-  });
-  
-  // Tag matches
-  if (thought.tags) {
-    thought.tags.forEach(tag => {
-      if (tag.toLowerCase().includes(queryLower)) {
-        score += 5;
-      }
-    });
-  }
-  
-  // Mode match
-  if (thought.mode && thought.mode.toLowerCase().includes(queryLower)) {
-    score += 3;
-  }
-  
-  // Boost score for thoughts with relationships (they're part of reasoning chains)
-  if (thought.relates_to || thought.relationship_type) {
-    score += 1;
-  }
-  
-  return score;
-}
-
-// Build reasoning chain for "builds_on" relationships
-// Traces back the chain of thoughts that build on each other
-// Returns: [foundation_thought] → [building_thought] → [current_thought]
-function buildReasoningChain(thoughtId, thoughts) {
-  const chain = [];
-  const visited = new Set(); // Prevent infinite loops
-  let currentId = thoughtId;
-  
-  // Trace backwards through the builds_on chain
-  while (currentId && !visited.has(currentId) && chain.length < 20) {
-    visited.add(currentId);
-    const thought = thoughts.find(t => t.id === currentId);
-    
-    if (!thought) break;
-    
-    // Add to front of chain (we're going backwards)
-    chain.unshift({
-      id: thought.id,
-      content_preview: thought.content.substring(0, 120) + (thought.content.length > 120 ? "..." : ""),
-      mode: thought.mode,
-      timestamp: thought.timestamp,
-      relationship_type: thought.relationship_type
-    });
-    
-    // Continue tracing if this thought builds on another
-    if (thought.relationship_type === 'builds_on' && thought.relates_to) {
-      currentId = thought.relates_to;
-    } else {
-      break;
-    }
-  }
-  
-  // Limit chain length to respect working memory constraints (7±2 items)
-  const maxChainLength = 7;
-  if (chain.length > maxChainLength) {
-    // Keep the most recent items and add an indicator for truncation
-    const truncatedChain = chain.slice(-maxChainLength);
-    truncatedChain[0] = {
-      ...truncatedChain[0],
-      truncated: true,
-      note: `... (${chain.length - maxChainLength} earlier thoughts in chain)`
-    };
-    return {
-      chain: truncatedChain,
-      total_length: chain.length,
-      truncated: true
-    };
-  }
-  
-  return {
-    chain: chain,
-    total_length: chain.length,
-    truncated: false
-  };
-}
 
 // Error handling
 process.on('uncaughtException', (error) => {
@@ -802,25 +973,20 @@ process.on('unhandledRejection', (reason, promise) => {
 // Initialize and start server
 async function main() {
   try {
-    // Ensure session directory exists on startup
     await ensureSessionDir();
     
-    // Use stdio transport for npx compatibility
     const transport = new StdioServerTransport();
-    
-    // Connect server to transport
     await server.connect(transport);
     
-    // Server is now running and listening for MCP messages
-    console.error('Minimal Think MCP Server with persistent sessions started successfully');
+    console.error('Session Think MCP Server started successfully');
     console.error(`Session storage: ${SESSION_DIR}`);
+    console.error(`Max return: ${SESSION_MAX_RETURN}`);
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
 
-// Start the server
 main().catch((error) => {
   console.error('Server startup failed:', error);
   process.exit(1);

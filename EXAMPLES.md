@@ -1,17 +1,27 @@
-# Persistent Sessions Examples
+# Session Think MCP Examples
 
-This document provides examples of how to use the persistent session features in minimal-think-mcp.
+This document provides examples of how to use the session-think-mcp tools.
 
-## Basic Thinking Session
+## Session Naming Convention
 
-Start a new thinking session:
+All sessions use structured names: `category:name:subcategory`
+
+**Examples**:
+- `thesis:NVDA:ai_dominance`
+- `topic:research:quantum_computing`
+- `project:website:redesign`
+- `analysis:competitor:openai`
+
+## Basic Usage
+
+### Starting a New Session
 
 ```json
 {
-  "reasoning": "Let me think about implementing a new authentication system for our application:
-1. We need to support both traditional username/password and OAuth providers
-2. Security requirements include MFA and account recovery options
-3. User experience must be seamless across multiple devices"
+  "reasoning": "NVIDIA's AI dominance stems from their CUDA ecosystem, which creates significant switching costs for enterprises. Their data center revenue has grown 300%+ YoY.",
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "mode": "linear",
+  "tags": ["investment", "semiconductor", "AI"]
 }
 ```
 
@@ -19,33 +29,26 @@ Response:
 
 ```json
 {
-  "thinking": "Let me think about implementing a new authentication system for our application:\n1. We need to support both traditional username/password and OAuth providers\n2. Security requirements include MFA and account recovery options\n3. User experience must be seamless across multiple devices",
-  "thoughtId": 1,
-  "sessionId": "session_1720529347123_ab7c9",
+  "thinking": "NVIDIA's AI dominance stems from their CUDA ecosystem...",
+  "thoughtId": "thought_1740387654321_abc123",
+  "sessionName": "thesis:NVDA:ai_dominance",
   "mode": "linear",
-  "tags": [],
-  "timestamp": "2025-07-06T10:30:00.000Z",
+  "tags": ["investment", "semiconductor", "AI"],
+  "timestamp": "2026-02-24T12:00:00.000Z",
   "thoughtCount": 1,
   "preserved": true,
-  "usingDefaultSession": false,
-  "isDefaultSession": false
+  "isNewSession": true
 }
 ```
 
-## Continuing a Session
-
-Continue the previous session by using the returned sessionId:
+### Continuing a Session
 
 ```json
 {
-  "reasoning": "Now, let's explore the OAuth integration options:
-- Google OAuth offers simple integration but limited customization
-- Auth0 provides extensive features but has cost implications 
-- Firebase Authentication balances ease of use with sufficient features
-- Custom implementation gives maximum control but requires more development time",
-  "sessionId": "session_1720529347123_ab7c9",
-  "mode": "creative",
-  "tags": ["authentication", "oauth"]
+  "reasoning": "However, AMD's MI300X offers competitive performance at lower cost. Enterprise customers may consider switching for inference workloads.",
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "mode": "critical",
+  "tags": ["competition", "risk"]
 }
 ```
 
@@ -53,221 +56,53 @@ Response:
 
 ```json
 {
-  "thinking": "Now, let's explore the OAuth integration options:\n- Google OAuth offers simple integration but limited customization\n- Auth0 provides extensive features but has cost implications \n- Firebase Authentication balances ease of use with sufficient features\n- Custom implementation gives maximum control but requires more development time",
-  "thoughtId": 2,
-  "sessionId": "session_1720529347123_ab7c9",
-  "mode": "creative",
-  "tags": ["authentication", "oauth"],
-  "timestamp": "2025-07-06T10:35:00.000Z",
+  "thinking": "However, AMD's MI300X offers competitive performance...",
+  "thoughtId": "thought_1740387712345_def456",
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "mode": "critical",
+  "tags": ["competition", "risk"],
+  "timestamp": "2026-02-24T12:05:00.000Z",
   "thoughtCount": 2,
   "preserved": true,
-  "usingDefaultSession": false,
-  "isDefaultSession": false
+  "isNewSession": false
 }
 ```
 
-## Using Different Thinking Modes
+## Using Relationships
 
-Switch to a critical thinking mode for evaluation:
+### Building on Previous Thoughts
 
 ```json
 {
-  "reasoning": "Let's critically evaluate the options based on our requirements:
-1. Feature Requirements:
-   - Google OAuth lacks MFA controls
-   - Auth0 offers comprehensive features
-   - Firebase has good but limited MFA options
-   - Custom would require implementing everything
-
-2. Development Effort:
-   - Google OAuth: Low effort
-   - Auth0: Medium initial setup, low maintenance
-   - Firebase: Low-medium effort
-   - Custom: High effort, high maintenance
-
-3. Cost Analysis:
-   - Google OAuth: Free tier sufficient
-   - Auth0: Expensive at scale
-   - Firebase: Reasonable pricing
-   - Custom: High initial development cost",
-  "sessionId": "session_1720529347123_ab7c9",
+  "reasoning": "The AMD threat is mitigated by NVIDIA's software moat. CUDA has 15+ years of optimization and developer adoption.",
+  "sessionName": "thesis:NVDA:ai_dominance",
   "mode": "critical",
-  "tags": ["authentication", "evaluation"]
+  "relates_to": "thought_1740387712345_def456",
+  "relationship_type": "builds_on"
 }
 ```
 
-Response:
+### Contradicting a Thought
 
 ```json
 {
-  "thinking": "Let's critically evaluate the options based on our requirements:\n1. Feature Requirements:\n   - Google OAuth lacks MFA controls\n   - Auth0 offers comprehensive features\n   - Firebase has good but limited MFA options\n   - Custom would require implementing everything\n\n2. Development Effort:\n   - Google OAuth: Low effort\n   - Auth0: Medium initial setup, low maintenance\n   - Firebase: Low-medium effort\n   - Custom: High effort, high maintenance\n\n3. Cost Analysis:\n   - Google OAuth: Free tier sufficient\n   - Auth0: Expensive at scale\n   - Firebase: Reasonable pricing\n   - Custom: High initial development cost",
-  "thoughtId": 3,
-  "sessionId": "session_1720529347123_ab7c9",
+  "reasoning": "Actually, AMD's ROCm platform is rapidly improving and Google has publicly committed to supporting it.",
+  "sessionName": "thesis:NVDA:ai_dominance",
   "mode": "critical",
-  "tags": ["authentication", "evaluation"],
-  "timestamp": "2025-07-06T10:40:00.000Z",
-  "thoughtCount": 3,
-  "preserved": true,
-  "usingDefaultSession": false,
-  "isDefaultSession": false
+  "relates_to": "thought_1740387712345_def456",
+  "relationship_type": "contradicts"
 }
 ```
-
-## Using the Default Session Feature
-
-### Setting a Default Session
-
-You can set a session as the default in two ways:
-
-1. When creating a new thought, add the `setAsDefault` parameter:
-
-```json
-{
-  "reasoning": "Starting a new thinking process about our cloud migration strategy...",
-  "setAsDefault": true
-}
-```
-
-Response:
-
-```json
-{
-  "thinking": "Starting a new thinking process about our cloud migration strategy...",
-  "thoughtId": 1,
-  "sessionId": "session_1720540147123_cd8e5",
-  "mode": "linear",
-  "tags": [],
-  "timestamp": "2025-07-06T11:30:00.000Z",
-  "thoughtCount": 1,
-  "preserved": true,
-  "usingDefaultSession": false,
-  "isDefaultSession": true
-}
-```
-
-2. Or use the dedicated tool to set an existing session as default:
-
-```json
-{
-  "sessionId": "session_1720529347123_ab7c9"
-}
-```
-
-Response:
-
-```json
-{
-  "status": "success",
-  "message": "Default session set to session_1720529347123_ab7c9",
-  "timestamp": "2025-07-06T11:35:00.000Z"
-}
-```
-
-### Automatically Using the Default Session
-
-Once you've set a default session, you can continue it without specifying the session ID:
-
-```json
-{
-  "reasoning": "Next steps in our authentication implementation strategy...",
-  "useDefaultSession": true
-}
-```
-
-Response:
-
-```json
-{
-  "thinking": "Next steps in our authentication implementation strategy...",
-  "thoughtId": 4,
-  "sessionId": "session_1720529347123_ab7c9",
-  "mode": "linear",
-  "tags": [],
-  "timestamp": "2025-07-06T11:40:00.000Z",
-  "thoughtCount": 4,
-  "preserved": true,
-  "usingDefaultSession": true,
-  "isDefaultSession": true
-}
-```
-
-### Viewing the Default Session
-
-You can view the default session without specifying its ID:
-
-```json
-{}
-```
-
-Response:
-
-```json
-{
-  "sessionId": "session_1720529347123_ab7c9",
-  "thoughts": [
-    {
-      "id": 1,
-      "content": "Let me think about implementing a new authentication system for our application:\n1. We need to support both traditional username/password and OAuth providers\n2. Security requirements include MFA and account recovery options\n3. User experience must be seamless across multiple devices",
-      "mode": "linear",
-      "tags": [],
-      "timestamp": "2025-07-06T10:30:00.000Z"
-    },
-    // Additional thoughts...
-  ],
-  "count": 4,
-  "timestamp": "2025-07-06T11:45:00.000Z",
-  "usingDefaultSession": true
-}
-```
-
-### Resetting the Default Session
-
-Clear the default session when you want to start fresh:
-
-```json
-{}
-```
-
-Response:
-
-```json
-{
-  "status": "success",
-  "message": "Default session cleared",
-  "timestamp": "2025-07-06T11:50:00.000Z"
-}
-```
-
-## Using Default Sessions Across Different Chats
-
-The default session feature is especially powerful for working across multiple Claude chats:
-
-1. In Chat A:
-   ```json
-   {
-     "reasoning": "Starting research on quantum computing applications...",
-     "setAsDefault": true
-   }
-   ```
-
-2. Close Chat A and start a new Chat B with Claude
-
-3. In Chat B, continue the same thinking process:
-   ```json
-   {
-     "reasoning": "Continuing my quantum computing research from yesterday...",
-     "useDefaultSession": true
-   }
-   ```
-
-This automatically connects to the previous session without needing to remember and copy the session ID.
 
 ## Session Management
 
-### List all sessions:
+### Listing Sessions
 
 ```json
-{}
+{
+  "limit": 10,
+  "offset": 0
+}
 ```
 
 Response:
@@ -276,33 +111,35 @@ Response:
 {
   "sessions": [
     {
-      "sessionId": "session_1720529347123_ab7c9",
-      "thoughtCount": 4,
-      "firstThought": "2025-07-06T10:30:00.000Z",
-      "lastThought": "2025-07-06T11:40:00.000Z",
-      "lastModified": "2025-07-06T11:40:00.000Z",
-      "isDefault": true
+      "sessionName": "thesis:NVDA:ai_dominance",
+      "thoughtCount": 5,
+      "firstThought": "2026-02-24T12:00:00.000Z",
+      "lastThought": "2026-02-24T12:30:00.000Z",
+      "lastModified": "2026-02-24T12:30:00.000Z"
     },
     {
-      "sessionId": "session_1720540147123_cd8e5",
-      "thoughtCount": 1,
-      "firstThought": "2025-07-06T11:30:00.000Z",
-      "lastThought": "2025-07-06T11:30:00.000Z",
-      "lastModified": "2025-07-06T11:30:00.000Z",
-      "isDefault": false
+      "sessionName": "topic:research:quantum_computing",
+      "thoughtCount": 12,
+      "firstThought": "2026-02-20T09:00:00.000Z",
+      "lastThought": "2026-02-23T14:00:00.000Z",
+      "lastModified": "2026-02-23T14:00:00.000Z"
     }
   ],
   "count": 2,
-  "defaultSessionId": "session_1720529347123_ab7c9",
-  "timestamp": "2025-07-06T12:00:00.000Z"
+  "total": 2,
+  "limit": 10,
+  "offset": 0,
+  "timestamp": "2026-02-24T13:00:00.000Z"
 }
 ```
 
-### View a specific session:
+### Viewing a Session
 
 ```json
 {
-  "sessionId": "session_1720529347123_ab7c9"
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "limit": 50,
+  "offset": 0
 }
 ```
 
@@ -310,28 +147,131 @@ Response:
 
 ```json
 {
-  "sessionId": "session_1720529347123_ab7c9",
+  "sessionName": "thesis:NVDA:ai_dominance",
   "thoughts": [
     {
-      "id": 1,
-      "content": "Let me think about implementing a new authentication system for our application:\n1. We need to support both traditional username/password and OAuth providers\n2. Security requirements include MFA and account recovery options\n3. User experience must be seamless across multiple devices",
+      "id": "thought_1740387654321_abc123",
+      "content": "NVIDIA's AI dominance stems from their CUDA ecosystem...",
       "mode": "linear",
-      "tags": [],
-      "timestamp": "2025-07-06T10:30:00.000Z"
-    },
-    // Additional thoughts...
+      "tags": ["investment", "semiconductor", "AI"],
+      "timestamp": "2026-02-24T12:00:00.000Z"
+    }
   ],
-  "count": 4,
-  "timestamp": "2025-07-06T12:05:00.000Z",
-  "usingDefaultSession": false
+  "count": 1,
+  "totalThoughts": 5,
+  "limit": 50,
+  "offset": 0,
+  "hasMore": false,
+  "timestamp": "2026-02-24T13:00:00.000Z"
 }
 ```
 
-### Delete a session:
+### Getting Session Info
 
 ```json
 {
-  "sessionId": "session_1720540147123_cd8e5"
+  "sessionName": "thesis:NVDA:ai_dominance"
+}
+```
+
+Response:
+
+```json
+{
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "exists": true,
+  "thoughtCount": 5,
+  "firstThought": "2026-02-24T12:00:00.000Z",
+  "lastThought": "2026-02-24T12:30:00.000Z",
+  "created": "2026-02-24T12:00:00.000Z",
+  "lastModified": "2026-02-24T12:30:00.000Z",
+  "modes": ["linear", "critical"],
+  "tags": ["investment", "semiconductor", "AI", "competition", "risk"],
+  "timestamp": "2026-02-24T13:00:00.000Z"
+}
+```
+
+## Search Operations
+
+### Searching Within a Session
+
+```json
+{
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "query": "AMD",
+  "limit": 10
+}
+```
+
+Response:
+
+```json
+{
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "query": "AMD",
+  "results": [
+    {
+      "id": "thought_1740387712345_def456",
+      "content_preview": "However, AMD's MI300X offers competitive performance at lower cost...",
+      "mode": "critical",
+      "tags": ["competition", "risk"],
+      "timestamp": "2026-02-24T12:05:00.000Z",
+      "relevance_score": 12
+    }
+  ],
+  "count": 1,
+  "offset": 0,
+  "limit": 10,
+  "timestamp": "2026-02-24T13:00:00.000Z"
+}
+```
+
+### Searching All Sessions
+
+```json
+{
+  "query": "artificial intelligence",
+  "limit": 20
+}
+```
+
+Response:
+
+```json
+{
+  "query": "artificial intelligence",
+  "sessions": [
+    {
+      "sessionName": "thesis:NVDA:ai_dominance",
+      "matchingThoughts": 3,
+      "totalThoughts": 5,
+      "lastModified": "2026-02-24T12:30:00.000Z",
+      "relevanceScore": 3
+    },
+    {
+      "sessionName": "topic:research:quantum_computing",
+      "matchingThoughts": 1,
+      "totalThoughts": 12,
+      "lastModified": "2026-02-23T14:00:00.000Z",
+      "relevanceScore": 1
+    }
+  ],
+  "count": 2,
+  "totalMatching": 2,
+  "offset": 0,
+  "limit": 20,
+  "timestamp": "2026-02-24T13:00:00.000Z"
+}
+```
+
+## Session Operations
+
+### Renaming a Session
+
+```json
+{
+  "oldSessionName": "TEMP:1740387654321:abc123",
+  "newSessionName": "thesis:NVDA:ai_dominance"
 }
 ```
 
@@ -340,17 +280,19 @@ Response:
 ```json
 {
   "status": "success",
-  "message": "Session session_1720540147123_cd8e5 deleted successfully",
-  "wasDefault": false,
-  "timestamp": "2025-07-06T12:10:00.000Z"
+  "message": "Session renamed from TEMP:1740387654321:abc123 to thesis:NVDA:ai_dominance",
+  "oldName": "TEMP:1740387654321:abc123",
+  "newName": "thesis:NVDA:ai_dominance",
+  "thoughtCount": 5,
+  "timestamp": "2026-02-24T13:00:00.000Z"
 }
 ```
 
-### Clean up old sessions:
+### Deleting a Session
 
 ```json
 {
-  "maxAgeDays": 60
+  "sessionName": "thesis:NVDA:ai_dominance"
 }
 ```
 
@@ -359,22 +301,120 @@ Response:
 ```json
 {
   "status": "success",
-  "deletedCount": 2,
-  "maxAgeDays": 60,
-  "message": "Deleted 2 sessions older than 60 days",
-  "timestamp": "2025-07-06T12:15:00.000Z"
+  "message": "Session thesis:NVDA:ai_dominance deleted successfully",
+  "timestamp": "2026-02-24T13:00:00.000Z"
 }
 ```
 
-## Resuming a Session Days Later
+### Cleaning Up Old Sessions
 
-The key benefit of persistent sessions is the ability to continue a thinking process days, weeks, or even months later:
+```json
+{
+  "maxAgeDays": 90
+}
+```
 
-1. Start a session on Monday (and optionally set it as default)
-2. Shut down your computer
-3. Come back a week later and use either:
-   - The specific sessionId if you have it
-   - `"useDefaultSession": true` if you set it as default
-4. All your previous thoughts are preserved and you can continue right where you left off
+Response:
 
-This makes it perfect for long-term thinking projects, complex problem-solving tasks, and iterative reasoning that spans multiple work sessions.
+```json
+{
+  "status": "success",
+  "deletedCount": 3,
+  "maxAgeDays": 90,
+  "message": "Deleted 3 sessions older than 90 days",
+  "timestamp": "2026-02-24T13:00:00.000Z"
+}
+```
+
+## Finding Thought Relationships
+
+```json
+{
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "query": "competition",
+  "relationship_types": ["builds_on", "contradicts"],
+  "limit": 10
+}
+```
+
+Response:
+
+```json
+{
+  "sessionName": "thesis:NVDA:ai_dominance",
+  "query": "competition",
+  "results": [
+    {
+      "id": "thought_1740387712345_def456",
+      "content_preview": "However, AMD's MI300X offers competitive performance...",
+      "mode": "critical",
+      "tags": ["competition", "risk"],
+      "timestamp": "2026-02-24T12:05:00.000Z",
+      "relates_to": null,
+      "relationship_type": null,
+      "relevance_score": 15
+    }
+  ],
+  "count": 1,
+  "timestamp": "2026-02-24T13:00:00.000Z"
+}
+```
+
+## Temporary Sessions
+
+When no session name is provided, a temporary session is created:
+
+```json
+{
+  "reasoning": "Quick thought about the market..."
+}
+```
+
+Response:
+
+```json
+{
+  "thinking": "Quick thought about the market...",
+  "thoughtId": "thought_1740388000000_xyz789",
+  "sessionName": "TEMP:1740388000000:xyz789",
+  "mode": "linear",
+  "tags": [],
+  "timestamp": "2026-02-24T13:00:00.000Z",
+  "thoughtCount": 1,
+  "preserved": true,
+  "isNewSession": true
+}
+```
+
+You can later rename it:
+
+```json
+{
+  "oldSessionName": "TEMP:1740388000000:xyz789",
+  "newSessionName": "analysis:market:daily_notes"
+}
+```
+
+## Pagination Example
+
+For large sessions, use pagination:
+
+```json
+{
+  "sessionName": "topic:research:quantum_computing",
+  "limit": 20,
+  "offset": 0
+}
+```
+
+Then get the next page:
+
+```json
+{
+  "sessionName": "topic:research:quantum_computing",
+  "limit": 20,
+  "offset": 20
+}
+```
+
+The `hasMore` field indicates if additional pages exist.

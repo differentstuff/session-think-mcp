@@ -1,11 +1,11 @@
 {
-  "name": "minimal-think-mcp",
-  "version": "1.2.4",
-  "description": "A minimal MCP server implementing a persistent thinking workspace tool with zero cognitive interference and default session support",
+  "name": "session-think-mcp",
+  "version": "1.3.0",
+  "description": "A minimal MCP server implementing a persistent thinking workspace tool with structured session naming and search capabilities",
   "type": "module",
   "main": "index.js",
   "bin": {
-    "minimal-think-mcp": "index.js"
+    "session-think-mcp": "index.js"
   },
   "scripts": {
     "start": "node index.js",
@@ -23,8 +23,8 @@
     "persistent",
     "sessions",
     "thinking-modes",
-    "default-session",
-    "cross-chat"
+    "session-naming",
+    "search"
   ],
   "author": "differentstuff",
   "license": "MIT",
@@ -37,10 +37,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/differentstuff/minimal-think-mcp.git"
+    "url": "git+https://github.com/differentstuff/session-think-mcp.git"
   },
-  "homepage": "https://github.com/differentstuff/minimal-think-mcp#readme",
+  "homepage": "https://github.com/differentstuff/session-think-mcp#readme",
   "bugs": {
-    "url": "https://github.com/differentstuff/minimal-think-mcp/issues"
+    "url": "https://github.com/differentstuff/session-think-mcp/issues"
   }
 }
