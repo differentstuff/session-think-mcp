@@ -25,12 +25,22 @@ const SESSION_DIR = process.env.SESSION_DIR || path.join(process.cwd(), '.sessio
 const SESSION_MAX_RETURN = parseInt(process.env.SESSION_MAX_RETURN) || 50;
 const SESSION_NAME_PATTERN = process.env.SESSION_NAME_PATTERN || '^[a-zA-Z0-9_-]+(:[a-zA-Z0-9_-]+){2,}$';
 
-// Ensure session directory exists
+// Ensure session directory exists and is writable
 async function ensureSessionDir() {
   try {
     await fs.mkdir(SESSION_DIR, { recursive: true });
   } catch (error) {
-    console.error('Failed to create session directory:', error);
+    if (error.code !== 'EEXIST') {
+      throw new Error(`Session directory cannot be created (${SESSION_DIR}): ${error.message}`);
+    }
+  }
+  // Verify writability by attempting to create/check a test marker
+  try {
+    const testFile = path.join(SESSION_DIR, '.write-test');
+    await fs.writeFile(testFile, String(Date.now()), 'utf8');
+    await fs.unlink(testFile);
+  } catch (error) {
+    throw new Error(`Session directory is not writable (${SESSION_DIR}): ${error.message}. Check permissions and mount options.`);
   }
 }
 
@@ -71,26 +81,37 @@ function generateRandomSessionName() {
 
 // Load a session from disk
 async function loadSession(sessionName) {
+  const sanitized = sanitizeSessionName(sessionName);
+  const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
   try {
-    const sanitized = sanitizeSessionName(sessionName);
-    const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
     const data = await fs.readFile(sessionPath, 'utf8');
     return JSON.parse(data);
   } catch (error) {
-    // Return empty array if session doesn't exist yet
-    return [];
+    if (error.code === 'ENOENT') {
+      // New session — file doesn't exist yet, this is expected
+      return [];
+    }
+    // Real error: permission denied, corrupt JSON, etc.
+    throw new Error(`Failed to load session '${sessionName}' (${sessionPath}): ${error.message}`);
   }
 }
 
 // Save a session to disk
 async function saveSession(sessionName, thoughts) {
+  const sanitized = sanitizeSessionName(sessionName);
+  const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
   try {
-    const sanitized = sanitizeSessionName(sessionName);
-    const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
+    // Ensure parent directory exists before writing (mkdir -p is idempotent)
+    await fs.mkdir(SESSION_DIR, { recursive: true });
     await fs.writeFile(sessionPath, JSON.stringify(thoughts, null, 2), 'utf8');
   } catch (error) {
-    console.error(`Failed to save session ${sessionName}:`, error);
-    throw error;
+    if (error.code === 'EACCES') {
+      throw new Error(`Permission denied writing session '${sessionName}' (${sessionPath}). Check directory ownership and permissions.`);
+    }
+    if (error.code === 'EROFS') {
+      throw new Error(`Read-only filesystem: cannot write session '${sessionName}' (${sessionPath}). Check Docker mount options.`);
+    }
+    throw new Error(`Failed to save session '${sessionName}' (${sessionPath}): ${error.message}`);
   }
 }
 
