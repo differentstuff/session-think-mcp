@@ -25,22 +25,55 @@ const SESSION_DIR = process.env.SESSION_DIR || path.join(process.cwd(), '.sessio
 const SESSION_MAX_RETURN = parseInt(process.env.SESSION_MAX_RETURN) || 50;
 const SESSION_NAME_PATTERN = process.env.SESSION_NAME_PATTERN || '^[a-zA-Z0-9_-]+(:[a-zA-Z0-9_-]+){2,}$';
 
-// Ensure session directory exists and is writable
-async function ensureSessionDir() {
+const TMP_DIR = path.join(SESSION_DIR, 'tmp');
+
+// Per-session mutex to prevent concurrent read-modify-write races
+const sessionLocks = new Map();
+
+async function withSessionLock(sessionName, fn) {
+  // Wait for any existing lock to release
+  while (sessionLocks.has(sessionName)) {
+    await sessionLocks.get(sessionName);
+  }
+  // Acquire lock
+  let release;
+  const lock = new Promise(resolve => { release = resolve; });
+  sessionLocks.set(sessionName, lock);
+  try {
+    return await fn();
+  } finally {
+    sessionLocks.delete(sessionName);
+    release();
+  }
+}
+
+// Track initialization state
+let sessionDirInitialized = false;
+
+// Initialize session directory once at startup
+async function initSessionDir() {
+  if (sessionDirInitialized) return;
+  
   try {
     await fs.mkdir(SESSION_DIR, { recursive: true });
-  } catch (error) {
-    if (error.code !== 'EEXIST') {
-      throw new Error(`Session directory cannot be created (${SESSION_DIR}): ${error.message}`);
+    await fs.mkdir(TMP_DIR, { recursive: true });
+    // Clean any orphaned tmp files from previous crashes
+    try {
+      const tmpFiles = await fs.readdir(TMP_DIR);
+      for (const file of tmpFiles) {
+        await fs.unlink(path.join(TMP_DIR, file));
+      }
+      if (tmpFiles.length > 0) {
+        console.error(`Cleaned ${tmpFiles.length} orphaned tmp file(s)`);
+      }
+    } catch (e) {
+      // Non-fatal: tmp cleanup failure shouldn't block startup
+      console.error(`Warning: could not clean tmp directory: ${e.message}`);
     }
-  }
-  // Verify writability by attempting to create/check a test marker
-  try {
-    const testFile = path.join(SESSION_DIR, '.write-test');
-    await fs.writeFile(testFile, String(Date.now()), 'utf8');
-    await fs.unlink(testFile);
+    sessionDirInitialized = true;
+    console.error(`Session storage initialized: ${SESSION_DIR}`);
   } catch (error) {
-    throw new Error(`Session directory is not writable (${SESSION_DIR}): ${error.message}. Check permissions and mount options.`);
+    throw new Error(`Session directory cannot be created (${SESSION_DIR}): ${error.message}`);
   }
 }
 
@@ -96,14 +129,30 @@ async function loadSession(sessionName) {
   }
 }
 
-// Save a session to disk
+// Save a session to disk with fsync for durability
 async function saveSession(sessionName, thoughts) {
   const sanitized = sanitizeSessionName(sessionName);
   const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
   try {
     // Ensure parent directory exists before writing (mkdir -p is idempotent)
     await fs.mkdir(SESSION_DIR, { recursive: true });
-    await fs.writeFile(sessionPath, JSON.stringify(thoughts, null, 2), 'utf8');
+    
+    // Write to tmp directory with random name, then rename for atomicity
+    const tmpId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.tmp`;
+    const tempPath = path.join(TMP_DIR, tmpId);
+    const data = JSON.stringify(thoughts, null, 2);
+    
+    // Open file, write, fsync, then close for durability
+    const fileHandle = await fs.open(tempPath, 'w');
+    try {
+      await fileHandle.writeFile(data, 'utf8');
+      await fileHandle.sync(); // Force flush to disk
+    } finally {
+      await fileHandle.close();
+    }
+    
+    // Atomic rename (guaranteed to be either old or new content, never partial)
+    await fs.rename(tempPath, sessionPath);
   } catch (error) {
     if (error.code === 'EACCES') {
       throw new Error(`Permission denied writing session '${sessionName}' (${sessionPath}). Check directory ownership and permissions.`);
@@ -118,7 +167,6 @@ async function saveSession(sessionName, thoughts) {
 // Get list of all session files
 async function listSessionFiles() {
   try {
-    await ensureSessionDir();
     const files = await fs.readdir(SESSION_DIR);
     return files.filter(file => file.endsWith('.json'));
   } catch (error) {
@@ -195,7 +243,7 @@ function calculateRelevanceScore(thought, queryLower) {
 // Create MCP server instance
 const server = new McpServer({
   name: "session-think-mcp",
-  version: "1.3.0"
+  version: "1.3.1"
 });
 
 // ============================================
@@ -228,24 +276,19 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
   },
   async ({ reasoning, sessionName, mode, tags, relates_to, relationship_type }) => {
     try {
-      await ensureSessionDir();
-      
       // Determine session name
       let session = sessionName;
-      let isNewSession = false;
-      
       if (!session) {
         session = generateRandomSessionName();
-        isNewSession = true;
       } else {
         validateSessionName(session);
-        // Check if this is a new session
-        const existingThoughts = await loadSession(session);
-        isNewSession = existingThoughts.length === 0;
       }
       
-      // Load existing thoughts for this session
-      const thoughts = await loadSession(session);
+      // Serialize load-modify-save under per-session lock
+      return await withSessionLock(session, async () => {
+        const existingThoughts = await loadSession(session);
+        const isNewSession = existingThoughts.length === 0;
+        const thoughts = [...existingThoughts];
       
       // Add new thought
       const thoughtId = `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -327,27 +370,28 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
         }
       }
       
-      // Generate the response JSON
-      const responseJson = {
-        thinking: reasoning,
-        thoughtId: thoughtId,
-        sessionName: session,
-        mode: mode || "linear",
-        tags: tags || [],
-        timestamp: new Date().toISOString(),
-        thoughtCount: thoughts.length,
-        preserved: true,
-        related_context: related_context,
-        reasoning_chain: reasoning_chain,
-        isNewSession: isNewSession
-      };
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(responseJson, null, 2)
-        }]
-      };
+        // Generate the response JSON
+        const responseJson = {
+          thinking: reasoning,
+          thoughtId: thoughtId,
+          sessionName: session,
+          mode: mode || "linear",
+          tags: tags || [],
+          timestamp: new Date().toISOString(),
+          thoughtCount: thoughts.length,
+          preserved: true,
+          related_context: related_context,
+          reasoning_chain: reasoning_chain,
+          isNewSession: isNewSession
+        };
+        
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(responseJson, null, 2)
+          }]
+        };
+      });
     } catch (error) {
       return {
         content: [{
@@ -374,7 +418,6 @@ server.registerTool(
   },
   async ({ limit = 50, offset = 0 }) => {
     try {
-      await ensureSessionDir();
       const files = await listSessionFiles();
       
       const sessionInfo = await Promise.all(
@@ -703,7 +746,6 @@ server.registerTool(
   },
   async ({ query, limit = 20, offset = 0 }) => {
     try {
-      await ensureSessionDir();
       const files = await listSessionFiles();
       
       const queryLower = query.toLowerCase();
@@ -846,7 +888,6 @@ server.registerTool(
   },
   async ({ maxAgeDays }) => {
     try {
-      await ensureSessionDir();
       const files = await listSessionFiles();
       const now = new Date();
       let deletedCount = 0;
@@ -994,7 +1035,7 @@ process.on('unhandledRejection', (reason, promise) => {
 // Initialize and start server
 async function main() {
   try {
-    await ensureSessionDir();
+    await initSessionDir();
     
     const transport = new StdioServerTransport();
     await server.connect(transport);
