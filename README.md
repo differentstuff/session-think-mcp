@@ -19,8 +19,8 @@ This MCP server provides a persistent thinking workspace that preserves reasonin
 - **Pagination**: Efficient retrieval with configurable limits
 - **Thinking Modes**: Optional support for different thinking strategies
 - **Relationship Tracking**: Link thoughts with relationships (builds_on, supports, contradicts, etc.)
-- **Native MCP Protocol**: Built with `@modelcontextprotocol/sdk` for optimal performance
-- **Minimal Dependencies**: Only the MCP SDK and Zod for validation
+- **FastMCP-based**: Built with `fastmcp` for stable, modern MCP protocol handling
+- **Minimal Dependencies**: Only FastMCP and Zod for validation
 
 ## Quick Start
 
@@ -127,7 +127,7 @@ Add a thought to a session.
 - `reasoning` (required): Your thinking text
 - `sessionName` (optional): Session name in format `category:name:subcategory`
 - `mode` (optional): Thinking mode - `linear`, `creative`, `critical`, `strategic`, `empathetic`
-- `tags` (optional): Array of tags for categorization
+- `tags` (optional): Array of tags for categorization (a comma/semicolon-separated string is also accepted and split server-side)
 - `relates_to` (optional): ID of related thought
 - `relationship_type` (optional): `builds_on`, `supports`, `contradicts`, `refines`, `synthesizes`
 
@@ -271,9 +271,9 @@ Claude, show me the last 20 thoughts from session thesis:NVDA:ai_dominance.
 
 ## Architecture
 
-- **Server**: Native JavaScript MCP server using official SDK
+- **Server**: Native JavaScript MCP server built on fastmcp
 - **Storage**: File-based persistent session storage (JSON)
-- **Transport**: StdioServerTransport for maximum compatibility
+- **Transport**: FastMCP stdio transport for maximum compatibility
 - **Validation**: Zod schemas for input validation
 - **Output**: Structured JSON with preserved reasoning and session context
 

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-09-21
+
+### Changed
+
+- **Migrated to fastmcp**: replaced `@modelcontextprotocol/sdk` (`McpServer.registerTool` + `StdioServerTransport`) with `fastmcp` 3.34.0 (`FastMCP.addTool` + `server.start({ transportType: "stdio" })`)
+- **Unknown-parameter policy**: all tool schemas use `.passthrough()`; unexpected parameters are detected in the handler and prepended as a ⚠️ notice to the response — the call still succeeds and is NOT retried (replaces the 8 explicit compatibility shims from 1.3.2)
+- **`find_thought_relationships`**: added `offset` pagination (applied after relevance sorting)
+- **`think`**: `tags` now accepts an array of strings or a comma/semicolon-separated string (normalized server-side)
+- **Tool `title` fields dropped**: fastmcp's `addTool` has no title equivalent; descriptions unchanged
+
 ## [1.3.0] - 2026-02-24
 
 ### Breaking Changes

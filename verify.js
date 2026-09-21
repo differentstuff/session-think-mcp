@@ -60,10 +60,10 @@ try {
   }
   
   // Check version
-  if (packageJson.version === '1.3.0') {
-    console.log('[OK] Version is 1.3.0');
+  if (packageJson.version === '1.4.0') {
+    console.log('[OK] Version is 1.4.0');
   } else {
-    console.log(`[FAIL] Version should be 1.3.0, found ${packageJson.version}`);
+    console.log(`[FAIL] Version should be 1.4.0, found ${packageJson.version}`);
   }
   
   // Check name
@@ -81,7 +81,7 @@ try {
   }
   
   // Check dependencies
-  const requiredDeps = ['@modelcontextprotocol/sdk', 'zod'];
+  const requiredDeps = ['fastmcp', 'zod'];
   for (const dep of requiredDeps) {
     if (packageJson.dependencies && packageJson.dependencies[dep]) {
       console.log(`[OK] Dependency "${dep}" configured`);
@@ -107,7 +107,7 @@ try {
     'sanitizeSessionName',
     'SESSION_DIR',
     'SESSION_MAX_RETURN',
-    'registerTool',
+    'FastMCP',
     'think',
     'list_sessions',
     'view_session',

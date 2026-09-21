@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import fs from 'fs/promises';
 import path from 'path';
@@ -241,19 +240,32 @@ function calculateRelevanceScore(thought, queryLower) {
 }
 
 // Create MCP server instance
-const server = new McpServer({
+const server = new FastMCP({
   name: "session-think-mcp",
-  version: "1.3.1"
+  version: "1.4.0"
 });
 
 // ============================================
 // Tool: think
 // ============================================
-server.registerTool(
-  "think",
-  {
-    title: "Think Tool",
-    description: `A persistent thinking workspace that preserves reasoning across sessions. 
+const ThinkArgsSchema = z.object({
+  reasoning: z.string().describe("Your thinking, reasoning, or analysis text"),
+  sessionName: z.string().optional().describe("Session name in format: category:name:subcategory (e.g., thesis:NVDA:ai_dominance). IMPORTANT: Always provide this for persistent sessions."),
+  mode: z.enum(["linear", "creative", "critical", "strategic", "empathetic"]).optional()
+    .describe("Optional thinking mode to structure your reasoning"),
+  tags: z.union([z.array(z.string()), z.string()]).optional()
+    .transform(v => {
+      if (v == null) return undefined;
+      return Array.isArray(v) ? v : v.split(/[,;]\s*/).map(s => s.trim()).filter(Boolean);
+    })
+    .describe("Optional tags for categorizing thoughts. Pass an array of strings; a comma-separated string is also accepted and will be split."),
+  relates_to: z.string().optional().describe("ID of thought this relates to"),
+  relationship_type: z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"]).optional().describe("Type of relationship to the referenced thought")
+}).passthrough();
+
+server.addTool({
+  name: "think",
+  description: `A persistent thinking workspace that preserves reasoning across sessions. 
 
 IMPORTANT: Always provide a sessionName parameter with format: category:name:subcategory
 Examples:
@@ -264,20 +276,16 @@ Examples:
 If no sessionName is provided, a temporary session will be generated (TEMP:timestamp:random).
 
 The sessionName is used to store and retrieve your thoughts. Use consistent naming to maintain context across conversations.`,
-    inputSchema: {
-      reasoning: z.string().describe("Your thinking, reasoning, or analysis text"),
-      sessionName: z.string().optional().describe("Session name in format: category:name:subcategory (e.g., thesis:NVDA:ai_dominance). IMPORTANT: Always provide this for persistent sessions."),
-      mode: z.enum(["linear", "creative", "critical", "strategic", "empathetic"]).optional()
-        .describe("Optional thinking mode to structure your reasoning"),
-      tags: z.array(z.string()).optional().describe("Optional tags for categorizing thoughts"),
-      relates_to: z.string().optional().describe("ID of thought this relates to"),
-      relationship_type: z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"]).optional().describe("Type of relationship to the referenced thought")
-    }
-  },
-  async ({ reasoning, sessionName, mode, tags, relates_to, relationship_type }) => {
+  parameters: ThinkArgsSchema,
+  execute: async (args) => {
     try {
+      // Detect unexpected parameters (passthrough lets them survive parsing); call still succeeds, notice is prepended
+      const stray = Object.keys(args).filter(k => !(k in ThinkArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
       // Determine session name
-      let session = sessionName;
+      let session = args.sessionName;
       if (!session) {
         session = generateRandomSessionName();
       } else {
@@ -294,9 +302,9 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
       const thoughtId = `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const thoughtObj = {
         id: thoughtId,
-        content: reasoning,
-        mode: mode || "linear",
-        tags: tags || [],
+        content: args.reasoning,
+        mode: args.mode || "linear",
+        tags: args.tags || [],
         timestamp: new Date().toISOString(),
         relates_to: null,
         relationship_type: null,
@@ -305,24 +313,24 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
       };
 
       // Validate and add relationship tracking
-      if (relates_to && relationship_type) {
-        if (relates_to === thoughtId) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference self" }) }] };
+      if (args.relates_to && args.relationship_type) {
+        if (args.relates_to === thoughtId) {
+          return JSON.stringify({ error: "Cannot reference self" }, null, 2);
         }
         
-        const referencedThought = thoughts.find(t => t.id === relates_to);
+        const referencedThought = thoughts.find(t => t.id === args.relates_to);
         if (!referencedThought) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "Referenced thought not found", thought_id: relates_to }) }] };
+          return JSON.stringify({ error: "Referenced thought not found", thought_id: args.relates_to }, null, 2);
         }
         
         if (new Date(referencedThought.timestamp) > new Date(thoughtObj.timestamp)) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot reference future thoughts" }) }] };
+          return JSON.stringify({ error: "Cannot reference future thoughts" }, null, 2);
         }
         
-        referencedThought.relationships_in.push({ thought_id: thoughtId, relationship_type });
-        thoughtObj.relationships_out.push({ thought_id: relates_to, relationship_type });
-        thoughtObj.relates_to = relates_to;
-        thoughtObj.relationship_type = relationship_type;
+        referencedThought.relationships_in.push({ thought_id: thoughtId, relationship_type: args.relationship_type });
+        thoughtObj.relationships_out.push({ thought_id: args.relates_to, relationship_type: args.relationship_type });
+        thoughtObj.relates_to = args.relates_to;
+        thoughtObj.relationship_type = args.relationship_type;
       }
 
       thoughts.push(thoughtObj);
@@ -334,28 +342,28 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
       let related_context = null;
       let reasoning_chain = null;
       
-      if (relates_to && relationship_type) {
-        const related_thought = thoughts.find(t => t.id === relates_to);
+      if (args.relates_to && args.relationship_type) {
+        const related_thought = thoughts.find(t => t.id === args.relates_to);
         if (related_thought) {
           related_context = {
-            relationship: relationship_type,
-            related_thought_id: relates_to,
+            relationship: args.relationship_type,
+            related_thought_id: args.relates_to,
             related_content: related_thought.content.substring(0, 200) + "...",
             related_mode: related_thought.mode
           };
           
-          if (relationship_type === 'builds_on') {
-            const chain = buildReasoningChain(relates_to, thoughts);
+          if (args.relationship_type === 'builds_on') {
+            const chain = buildReasoningChain(args.relates_to, thoughts);
             
             const conflicts = thoughts.filter(t => 
               t.relationships_out.some(rel => 
-                rel.thought_id === relates_to && rel.relationship_type === 'contradicts'
+                rel.thought_id === args.relates_to && rel.relationship_type === 'contradicts'
               )
             ).slice(0, 3);
             
             const supports = thoughts.filter(t => 
               t.relationships_out.some(rel => 
-                rel.thought_id === relates_to && rel.relationship_type === 'supports'
+                rel.thought_id === args.relates_to && rel.relationship_type === 'supports'
               )
             ).slice(0, 3);
             
@@ -372,11 +380,11 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
       
         // Generate the response JSON
         const responseJson = {
-          thinking: reasoning,
+          thinking: args.reasoning,
           thoughtId: thoughtId,
           sessionName: session,
-          mode: mode || "linear",
-          tags: tags || [],
+          mode: args.mode || "linear",
+          tags: args.tags || [],
           timestamp: new Date().toISOString(),
           thoughtCount: thoughts.length,
           preserved: true,
@@ -385,39 +393,34 @@ The sessionName is used to store and retrieve your thoughts. Use consistent nami
           isNewSession: isNewSession
         };
         
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify(responseJson, null, 2)
-          }]
-        };
+        return notice + JSON.stringify(responseJson, null, 2);
       });
     } catch (error) {
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ error: error.message }, null, 2)
-        }]
-      };
+      return JSON.stringify({ error: error.message }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: list_sessions
 // ============================================
-server.registerTool(
-  "list_sessions",
-  {
-    title: "List Sessions",
-    description: "List all available thinking sessions with metadata.",
-    inputSchema: {
-      limit: z.number().min(1).max(100).optional().default(50).describe("Maximum number of sessions to return"),
-      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
-    }
-  },
-  async ({ limit = 50, offset = 0 }) => {
+const ListSessionsArgsSchema = z.object({
+  limit: z.number().min(1).max(100).optional().default(50).describe("Maximum number of sessions to return"),
+  offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+}).passthrough();
+
+server.addTool({
+  name: "list_sessions",
+  description: "List all available thinking sessions with metadata.",
+  parameters: ListSessionsArgsSchema,
+  execute: async (args) => {
     try {
+      const stray = Object.keys(args).filter(k => !(k in ListSessionsArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      const limit = args.limit ?? 50;
+      const offset = args.offset ?? 0;
       const files = await listSessionFiles();
       
       const sessionInfo = await Promise.all(
@@ -454,53 +457,47 @@ server.registerTool(
         timestamp: new Date().toISOString()
       };
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(responseJson, null, 2)
-        }]
-      };
+      return notice + JSON.stringify(responseJson, null, 2);
     } catch (error) {
       console.error('Failed to list sessions:', error);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            error: "Failed to list sessions",
-            message: error.message
-          }, null, 2)
-        }]
-      };
+      return JSON.stringify({
+        error: "Failed to list sessions",
+        message: error.message
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: view_session
 // ============================================
-server.registerTool(
-  "view_session",
-  {
-    title: "View Session",
-    description: "View the contents of a thinking session. Returns the last N thoughts by default.",
-    inputSchema: {
-      sessionName: z.string().describe("Session name to view (format: category:name:subcategory)"),
-      limit: z.number().min(1).max(200).optional().describe("Maximum number of thoughts to return (default: SESSION_MAX_RETURN env or 50)"),
-      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
-    }
-  },
-  async ({ sessionName, limit, offset = 0 }) => {
+const ViewSessionArgsSchema = z.object({
+  sessionName: z.string().describe("Session name to view (format: category:name:subcategory)"),
+  limit: z.number().min(1).max(200).optional().describe("Maximum number of thoughts to return (default: SESSION_MAX_RETURN env or 50)"),
+  offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+}).passthrough();
+
+server.addTool({
+  name: "view_session",
+  description: "View the contents of a thinking session. Returns the last N thoughts by default.",
+  parameters: ViewSessionArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(sessionName);
+      const stray = Object.keys(args).filter(k => !(k in ViewSessionArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.sessionName);
       
-      const thoughts = await loadSession(sessionName);
-      const maxReturn = limit || SESSION_MAX_RETURN;
+      const thoughts = await loadSession(args.sessionName);
+      const maxReturn = args.limit || SESSION_MAX_RETURN;
+      const offset = args.offset ?? 0;
       
       // Return paginated thoughts (most recent first by default)
       const paginatedThoughts = thoughts.slice(offset, offset + maxReturn);
       
       const responseJson = {
-        sessionName: sessionName,
+        sessionName: args.sessionName,
         thoughts: paginatedThoughts,
         count: paginatedThoughts.length,
         totalThoughts: thoughts.length,
@@ -510,175 +507,144 @@ server.registerTool(
         timestamp: new Date().toISOString()
       };
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(responseJson, null, 2)
-        }]
-      };
+      return notice + JSON.stringify(responseJson, null, 2);
     } catch (error) {
-      console.error(`Failed to view session ${sessionName}:`, error);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            error: "Failed to view session",
-            message: error.message
-          }, null, 2)
-        }]
-      };
+      console.error(`Failed to view session ${args.sessionName}:`, error);
+      return JSON.stringify({
+        error: "Failed to view session",
+        message: error.message
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: delete_session
 // ============================================
-server.registerTool(
-  "delete_session",
-  {
-    title: "Delete Session",
-    description: "Delete a thinking session permanently.",
-    inputSchema: {
-      sessionName: z.string().describe("Session name to delete (format: category:name:subcategory)")
-    }
-  },
-  async ({ sessionName }) => {
+const DeleteSessionArgsSchema = z.object({
+  sessionName: z.string().describe("Session name to delete (format: category:name:subcategory)")
+}).passthrough();
+
+server.addTool({
+  name: "delete_session",
+  description: "Delete a thinking session permanently.",
+  parameters: DeleteSessionArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(sessionName);
+      const stray = Object.keys(args).filter(k => !(k in DeleteSessionArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.sessionName);
       
-      const sanitized = sanitizeSessionName(sessionName);
+      const sanitized = sanitizeSessionName(args.sessionName);
       const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
       await fs.unlink(sessionPath);
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            status: "success",
-            message: `Session ${sessionName} deleted successfully`,
-            timestamp: new Date().toISOString()
-          }, null, 2)
-        }]
-      };
+      return notice + JSON.stringify({
+        status: "success",
+        message: `Session ${args.sessionName} deleted successfully`,
+        timestamp: new Date().toISOString()
+      }, null, 2);
     } catch (error) {
-      console.error(`Failed to delete session ${sessionName}:`, error);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            error: "Failed to delete session",
-            message: error.message
-          }, null, 2)
-        }]
-      };
+      console.error(`Failed to delete session ${args.sessionName}:`, error);
+      return JSON.stringify({
+        error: "Failed to delete session",
+        message: error.message
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: rename_session
 // ============================================
-server.registerTool(
-  "rename_session",
-  {
-    title: "Rename Session",
-    description: "Rename an existing session to a new name.",
-    inputSchema: {
-      oldSessionName: z.string().describe("Current session name (format: category:name:subcategory)"),
-      newSessionName: z.string().describe("New session name (format: category:name:subcategory)")
-    }
-  },
-  async ({ oldSessionName, newSessionName }) => {
+const RenameSessionArgsSchema = z.object({
+  oldSessionName: z.string().describe("Current session name (format: category:name:subcategory)"),
+  newSessionName: z.string().describe("New session name (format: category:name:subcategory)")
+}).passthrough();
+
+server.addTool({
+  name: "rename_session",
+  description: "Rename an existing session to a new name.",
+  parameters: RenameSessionArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(oldSessionName);
-      validateSessionName(newSessionName);
+      const stray = Object.keys(args).filter(k => !(k in RenameSessionArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.oldSessionName);
+      validateSessionName(args.newSessionName);
       
       // Load old session
-      const thoughts = await loadSession(oldSessionName);
+      const thoughts = await loadSession(args.oldSessionName);
       
       if (thoughts.length === 0) {
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              error: "Session not found",
-              message: `Session ${oldSessionName} does not exist or is empty`
-            }, null, 2)
-          }]
-        };
+        return JSON.stringify({
+          error: "Session not found",
+          message: `Session ${args.oldSessionName} does not exist or is empty`
+        }, null, 2);
       }
       
       // Save to new name
-      await saveSession(newSessionName, thoughts);
+      await saveSession(args.newSessionName, thoughts);
       
       // Delete old session
-      const oldSanitized = sanitizeSessionName(oldSessionName);
+      const oldSanitized = sanitizeSessionName(args.oldSessionName);
       const oldPath = path.join(SESSION_DIR, `${oldSanitized}.json`);
       await fs.unlink(oldPath);
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            status: "success",
-            message: `Session renamed from ${oldSessionName} to ${newSessionName}`,
-            oldName: oldSessionName,
-            newName: newSessionName,
-            thoughtCount: thoughts.length,
-            timestamp: new Date().toISOString()
-          }, null, 2)
-        }]
-      };
+      return notice + JSON.stringify({
+        status: "success",
+        message: `Session renamed from ${args.oldSessionName} to ${args.newSessionName}`,
+        oldName: args.oldSessionName,
+        newName: args.newSessionName,
+        thoughtCount: thoughts.length,
+        timestamp: new Date().toISOString()
+      }, null, 2);
     } catch (error) {
       console.error(`Failed to rename session:`, error);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            error: "Failed to rename session",
-            message: error.message
-          }, null, 2)
-        }]
-      };
+      return JSON.stringify({
+        error: "Failed to rename session",
+        message: error.message
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: search_in_session
 // ============================================
-server.registerTool(
-  "search_in_session",
-  {
-    title: "Search in Session",
-    description: "Search for thoughts within a specific session by keyword.",
-    inputSchema: {
-      sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
-      query: z.string().describe("Search query (searches content, tags, and modes)"),
-      limit: z.number().min(1).max(50).optional().default(10).describe("Maximum number of results to return"),
-      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
-    }
-  },
-  async ({ sessionName, query, limit = 10, offset = 0 }) => {
+const SearchInSessionArgsSchema = z.object({
+  sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
+  query: z.string().describe("Search query (searches content, tags, and modes)"),
+  limit: z.number().min(1).max(50).optional().default(10).describe("Maximum number of results to return"),
+  offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+}).passthrough();
+
+server.addTool({
+  name: "search_in_session",
+  description: "Search for thoughts within a specific session by keyword.",
+  parameters: SearchInSessionArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(sessionName);
+      const stray = Object.keys(args).filter(k => !(k in SearchInSessionArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.sessionName);
       
-      const thoughts = await loadSession(sessionName);
+      const thoughts = await loadSession(args.sessionName);
       
       if (thoughts.length === 0) {
-        return { 
-          content: [{ 
-            type: "text", 
-            text: JSON.stringify({ 
-              error: "Session not found or empty",
-              sessionName: sessionName 
-            }, null, 2) 
-          }] 
-        };
+        return JSON.stringify({ 
+          error: "Session not found or empty",
+          sessionName: args.sessionName 
+        }, null, 2);
       }
       
-      const queryLower = query.toLowerCase();
+      const queryLower = args.query.toLowerCase();
       const searchResults = thoughts
         .filter(t => {
           const contentMatch = t.content.toLowerCase().includes(queryLower);
@@ -697,58 +663,51 @@ server.registerTool(
           relevance_score: calculateRelevanceScore(t, queryLower)
         }))
         .sort((a, b) => b.relevance_score - a.relevance_score)
-        .slice(offset, offset + limit);
+        .slice(args.offset ?? 0, (args.offset ?? 0) + args.limit);
       
       const response = {
-        sessionName: sessionName,
-        query: query,
+        sessionName: args.sessionName,
+        query: args.query,
         results: searchResults,
         count: searchResults.length,
-        offset,
-        limit,
+        offset: args.offset ?? 0,
+        limit: args.limit,
         timestamp: new Date().toISOString()
       };
       
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify(response, null, 2) 
-        }] 
-      };
+      return notice + JSON.stringify(response, null, 2);
     } catch (error) {
       console.error('Failed to search in session:', error);
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify({ 
-            error: "Failed to search in session", 
-            message: error.message 
-          }, null, 2) 
-        }] 
-      };
+      return JSON.stringify({ 
+        error: "Failed to search in session", 
+        message: error.message 
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: search_all_sessions
 // ============================================
-server.registerTool(
-  "search_all_sessions",
-  {
-    title: "Search All Sessions",
-    description: "Search for sessions containing thoughts matching a keyword. Returns session indicators, not full content.",
-    inputSchema: {
-      query: z.string().describe("Search query (searches content, tags, and modes across all sessions)"),
-      limit: z.number().min(1).max(50).optional().default(20).describe("Maximum number of sessions to return"),
-      offset: z.number().min(0).optional().default(0).describe("Pagination offset")
-    }
-  },
-  async ({ query, limit = 20, offset = 0 }) => {
+const SearchAllSessionsArgsSchema = z.object({
+  query: z.string().describe("Search query (searches content, tags, and modes across all sessions)"),
+  limit: z.number().min(1).max(50).optional().default(20).describe("Maximum number of sessions to return"),
+  offset: z.number().min(0).optional().default(0).describe("Pagination offset")
+}).passthrough();
+
+server.addTool({
+  name: "search_all_sessions",
+  description: "Search for sessions containing thoughts matching a keyword. Returns session indicators, not full content.",
+  parameters: SearchAllSessionsArgsSchema,
+  execute: async (args) => {
     try {
+      const stray = Object.keys(args).filter(k => !(k in SearchAllSessionsArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
       const files = await listSessionFiles();
       
-      const queryLower = query.toLowerCase();
+      const queryLower = args.query.toLowerCase();
       const matchingSessions = [];
       
       for (const file of files) {
@@ -780,10 +739,12 @@ server.registerTool(
       // Sort by relevance (number of matching thoughts)
       matchingSessions.sort((a, b) => b.relevanceScore - a.relevanceScore);
       
+      const limit = args.limit ?? 20;
+      const offset = args.offset ?? 0;
       const paginatedResults = matchingSessions.slice(offset, offset + limit);
       
       const response = {
-        query: query,
+        query: args.query,
         sessions: paginatedResults,
         count: paginatedResults.length,
         totalMatching: matchingSessions.length,
@@ -792,45 +753,38 @@ server.registerTool(
         timestamp: new Date().toISOString()
       };
       
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify(response, null, 2) 
-        }] 
-      };
+      return notice + JSON.stringify(response, null, 2);
     } catch (error) {
       console.error('Failed to search all sessions:', error);
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify({ 
-            error: "Failed to search all sessions", 
-            message: error.message 
-          }, null, 2) 
-        }] 
-      };
+      return JSON.stringify({ 
+        error: "Failed to search all sessions", 
+        message: error.message 
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: get_session_info
 // ============================================
-server.registerTool(
-  "get_session_info",
-  {
-    title: "Get Session Info",
-    description: "Get metadata about a specific session without loading all thoughts.",
-    inputSchema: {
-      sessionName: z.string().describe("Session name (format: category:name:subcategory)")
-    }
-  },
-  async ({ sessionName }) => {
+const GetSessionInfoArgsSchema = z.object({
+  sessionName: z.string().describe("Session name (format: category:name:subcategory)")
+}).passthrough();
+
+server.addTool({
+  name: "get_session_info",
+  description: "Get metadata about a specific session without loading all thoughts.",
+  parameters: GetSessionInfoArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(sessionName);
+      const stray = Object.keys(args).filter(k => !(k in GetSessionInfoArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.sessionName);
       
-      const thoughts = await loadSession(sessionName);
-      const sanitized = sanitizeSessionName(sessionName);
+      const thoughts = await loadSession(args.sessionName);
+      const sanitized = sanitizeSessionName(args.sessionName);
       const sessionPath = path.join(SESSION_DIR, `${sanitized}.json`);
       
       let stats;
@@ -841,7 +795,7 @@ server.registerTool(
       }
       
       const response = {
-        sessionName: sessionName,
+        sessionName: args.sessionName,
         exists: thoughts.length > 0 || stats !== null,
         thoughtCount: thoughts.length,
         firstThought: thoughts[0]?.timestamp || null,
@@ -853,41 +807,34 @@ server.registerTool(
         timestamp: new Date().toISOString()
       };
       
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify(response, null, 2) 
-        }] 
-      };
+      return notice + JSON.stringify(response, null, 2);
     } catch (error) {
       console.error('Failed to get session info:', error);
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify({ 
-            error: "Failed to get session info", 
-            message: error.message 
-          }, null, 2) 
-        }] 
-      };
+      return JSON.stringify({ 
+        error: "Failed to get session info", 
+        message: error.message 
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: cleanup_sessions
 // ============================================
-server.registerTool(
-  "cleanup_sessions",
-  {
-    title: "Cleanup Old Sessions",
-    description: "Manually clean up old thinking sessions based on age.",
-    inputSchema: {
-      maxAgeDays: z.number().min(1).default(90).describe("Maximum age in days before sessions are deleted")
-    }
-  },
-  async ({ maxAgeDays }) => {
+const CleanupSessionsArgsSchema = z.object({
+  maxAgeDays: z.number().min(1).default(90).describe("Maximum age in days before sessions are deleted")
+}).passthrough();
+
+server.addTool({
+  name: "cleanup_sessions",
+  description: "Manually clean up old thinking sessions based on age.",
+  parameters: CleanupSessionsArgsSchema,
+  execute: async (args) => {
     try {
+      const stray = Object.keys(args).filter(k => !(k in CleanupSessionsArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
       const files = await listSessionFiles();
       const now = new Date();
       let deletedCount = 0;
@@ -897,80 +844,69 @@ server.registerTool(
         const stats = await fs.stat(filePath);
         const fileAge = (now - stats.mtime) / (1000 * 60 * 60 * 24);
         
-        if (fileAge > maxAgeDays) {
+        if (fileAge > args.maxAgeDays) {
           await fs.unlink(filePath);
           deletedCount++;
         }
       }
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            status: "success",
-            deletedCount: deletedCount,
-            maxAgeDays: maxAgeDays,
-            message: `Deleted ${deletedCount} sessions older than ${maxAgeDays} days`,
-            timestamp: new Date().toISOString()
-          }, null, 2)
-        }]
-      };
+      return notice + JSON.stringify({
+        status: "success",
+        deletedCount: deletedCount,
+        maxAgeDays: args.maxAgeDays,
+        message: `Deleted ${deletedCount} sessions older than ${args.maxAgeDays} days`,
+        timestamp: new Date().toISOString()
+      }, null, 2);
     } catch (error) {
       console.error('Failed to clean up sessions:', error);
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            error: "Failed to clean up sessions",
-            message: error.message
-          }, null, 2)
-        }]
-      };
+      return JSON.stringify({
+        error: "Failed to clean up sessions",
+        message: error.message
+      }, null, 2);
     }
   }
-);
+});
 
 // ============================================
 // Tool: find_thought_relationships
 // ============================================
-server.registerTool(
-  "find_thought_relationships",
-  {
-    title: "Find Thought Relationships",
-    description: "Search for thoughts that could be related to current reasoning within a session.",
-    inputSchema: {
-      sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
-      query: z.string().describe("Search query to find related thoughts"),
-      relationship_types: z.array(z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"])).optional().describe("Filter by specific relationship types"),
-      exclude_thought_id: z.string().optional().describe("Exclude a specific thought ID from results"),
-      limit: z.number().min(1).max(20).default(10).describe("Maximum number of results to return")
-    }
-  },
-  async ({ sessionName, query, relationship_types, exclude_thought_id, limit = 10 }) => {
+const FindThoughtRelationshipsArgsSchema = z.object({
+  sessionName: z.string().describe("Session name to search in (format: category:name:subcategory)"),
+  query: z.string().describe("Search query to find related thoughts"),
+  relationship_types: z.array(z.enum(["builds_on", "supports", "contradicts", "refines", "synthesizes"])).optional().describe("Filter by specific relationship types"),
+  exclude_thought_id: z.string().optional().describe("Exclude a specific thought ID from results"),
+  limit: z.number().min(1).max(20).default(10).describe("Maximum number of results to return"),
+  offset: z.number().int().min(0).optional().default(0).describe("Pagination offset")
+}).passthrough();
+
+server.addTool({
+  name: "find_thought_relationships",
+  description: "Search for thoughts that could be related to current reasoning within a session.",
+  parameters: FindThoughtRelationshipsArgsSchema,
+  execute: async (args) => {
     try {
-      validateSessionName(sessionName);
+      const stray = Object.keys(args).filter(k => !(k in FindThoughtRelationshipsArgsSchema.shape));
+      const notice = stray.length
+        ? `⚠️ Notice: unexpected parameter(s) ignored: ${stray.join(", ")}. Pass only the parameters defined in this schema. The operation completed successfully — do NOT retry.\n\n`
+        : "";
+      validateSessionName(args.sessionName);
       
-      const thoughts = await loadSession(sessionName);
+      const thoughts = await loadSession(args.sessionName);
       
       if (thoughts.length === 0) {
-        return { 
-          content: [{ 
-            type: "text", 
-            text: JSON.stringify({ 
-              error: "Session not found or empty",
-              sessionName: sessionName 
-            }, null, 2) 
-          }] 
-        };
+        return JSON.stringify({ 
+          error: "Session not found or empty",
+          sessionName: args.sessionName 
+        }, null, 2);
       }
       
-      const queryLower = query.toLowerCase();
+      const queryLower = args.query.toLowerCase();
       const searchResults = thoughts
         .filter(t => {
-          if (exclude_thought_id && t.id === exclude_thought_id) return false;
+          if (args.exclude_thought_id && t.id === args.exclude_thought_id) return false;
           
-          if (relationship_types && relationship_types.length > 0) {
-            if (!t.relationship_type || !relationship_types.includes(t.relationship_type)) return false;
+          if (args.relationship_types && args.relationship_types.length > 0) {
+            if (!t.relationship_type || !args.relationship_types.includes(t.relationship_type)) return false;
           }
           
           const contentMatch = t.content.toLowerCase().includes(queryLower);
@@ -990,36 +926,28 @@ server.registerTool(
           relevance_score: calculateRelevanceScore(t, queryLower)
         }))
         .sort((a, b) => b.relevance_score - a.relevance_score)
-        .slice(0, limit);
+        .slice(args.offset ?? 0, (args.offset ?? 0) + args.limit);
       
       const response = {
-        sessionName: sessionName,
-        query: query,
+        sessionName: args.sessionName,
+        query: args.query,
         results: searchResults,
         count: searchResults.length,
+        offset: args.offset ?? 0,
+        limit: args.limit,
         timestamp: new Date().toISOString()
       };
       
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify(response, null, 2) 
-        }] 
-      };
+      return notice + JSON.stringify(response, null, 2);
     } catch (error) {
       console.error('Failed to find thought relationships:', error);
-      return { 
-        content: [{ 
-          type: "text", 
-          text: JSON.stringify({ 
-            error: "Failed to find relationships", 
-            message: error.message 
-          }, null, 2) 
-        }] 
-      };
+      return JSON.stringify({ 
+        error: "Failed to find relationships", 
+        message: error.message 
+      }, null, 2);
     }
   }
-);
+});
 
 // Error handling
 process.on('uncaughtException', (error) => {
@@ -1037,8 +965,7 @@ async function main() {
   try {
     await initSessionDir();
     
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    await server.start({ transportType: "stdio" });
     
     console.error('Session Think MCP Server started successfully');
     console.error(`Session storage: ${SESSION_DIR}`);
